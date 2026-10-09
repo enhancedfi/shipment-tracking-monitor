@@ -25,9 +25,9 @@ class CliTests(unittest.TestCase):
                     sys.executable,
                     "-m",
                     "shipment_monitor",
+                    "check",
                     "--store",
                     str(store),
-                    "check",
                     "--fixtures",
                     str(FIXTURES),
                     "--now",
@@ -52,7 +52,7 @@ class CliTests(unittest.TestCase):
 
     def test_execute_requires_an_explicit_opt_in(self):
         completed = subprocess.run(
-            [sys.executable, "-m", "shipment_monitor", "--store", str(SAMPLE), "check", "--execute"],
+            [sys.executable, "-m", "shipment_monitor", "check", "--store", str(SAMPLE), "--execute"],
             cwd=ROOT,
             check=False,
             capture_output=True,
@@ -81,9 +81,9 @@ class CliTests(unittest.TestCase):
                     sys.executable,
                     "-m",
                     "shipment_monitor",
+                    "check",
                     "--store",
                     str(store),
-                    "check",
                     "--fixtures",
                     str(FIXTURES),
                     "--now",
@@ -119,9 +119,9 @@ class CliTests(unittest.TestCase):
                 sys.executable,
                 "-m",
                 "shipment_monitor",
+                "briefing",
                 "--store",
                 str(SAMPLE),
-                "briefing",
                 "--slot",
                 "noon",
                 "--now",
@@ -179,7 +179,7 @@ class CliTests(unittest.TestCase):
                 encoding="utf-8",
             )
             completed = subprocess.run(
-                [sys.executable, "-m", "shipment_monitor", "--store", str(path), "import-shipments", "--input", str(incoming)],
+                [sys.executable, "-m", "shipment_monitor", "import-shipments", "--store", str(path), "--input", str(incoming)],
                 cwd=ROOT,
                 check=False,
                 capture_output=True,

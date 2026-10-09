@@ -15,6 +15,8 @@ class ParsingTests(unittest.TestCase):
         snapshot = parse_fedex_body(body)[0]
         self.assertEqual(snapshot.status, DELIVERED)
         self.assertEqual(snapshot.tracking_number, "877000000001")
+        self.assertEqual(snapshot.description, "Delivered")
+        self.assertEqual(snapshot.event_time, "2026-10-09T15:04:00")
 
     def test_fedex_codes(self):
         def status_for(code):

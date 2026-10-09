@@ -29,10 +29,11 @@ from shipment_monitor.store import Store
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Track phone shipments and queue customer status emails.")
-    parser.add_argument("--store", default=os.environ.get("SHIPMENT_STORE", "data/shipments.json"))
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--store", default=os.environ.get("SHIPMENT_STORE", "data/shipments.json"))
     sub = parser.add_subparsers(dest="command", required=True)
 
-    check = sub.add_parser("check", help="Read carrier status for due shipments")
+    check = sub.add_parser("check", parents=[common], help="Read carrier status for due shipments")
     _add_email_flags(check)
     check.add_argument("--fixtures", help="Directory of carrier JSON fixtures. Skips live APIs.")
     check.add_argument("--force", action="store_true", help="Poll even inside the cooldown window")
@@ -40,17 +41,17 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("--now", help="ISO timestamp used instead of the wall clock")
     check.add_argument("--commit", action="store_true", help="Write status changes back to the store")
 
-    briefing = sub.add_parser("briefing", help="Print the 6:00 AM, noon, or 4:00 PM summary")
+    briefing = sub.add_parser("briefing", parents=[common], help="Print the 6:00 AM, noon, or 4:00 PM summary")
     briefing.add_argument("--slot", choices=("auto", "morning", "noon", "afternoon"), default="auto")
     briefing.add_argument("--now", help="ISO timestamp used instead of the wall clock")
 
-    webhook = sub.add_parser("webhook", help="Apply one carrier push payload from a file")
+    webhook = sub.add_parser("webhook", parents=[common], help="Apply one carrier push payload from a file")
     _add_email_flags(webhook)
     webhook.add_argument("--input", required=True, help="JSON payload file")
     webhook.add_argument("--now", help="ISO timestamp used instead of the wall clock")
     webhook.add_argument("--commit", action="store_true")
 
-    incoming = sub.add_parser("import-shipments", help="Insert or refresh shipment rows")
+    incoming = sub.add_parser("import-shipments", parents=[common], help="Insert or refresh shipment rows")
     incoming.add_argument("--input", required=True)
 
     args = parser.parse_args(argv)

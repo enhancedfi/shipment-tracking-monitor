@@ -97,11 +97,17 @@ def _snapshot(
     event_time: str | None,
     source: str,
     seen: list[str],
+    delivered_reading: dict | None = None,
 ) -> TrackingSnapshot:
+    resolved = coerce_status(status, seen)
+    if resolved == DELIVERED and status != DELIVERED and delivered_reading:
+        raw_code = str(delivered_reading.get("code") or raw_code)
+        description = str(delivered_reading.get("description") or "Delivered")
+        event_time = delivered_reading.get("event_time") or event_time
     return TrackingSnapshot(
         carrier=carrier,
         tracking_number=tracking_number or "",
-        status=coerce_status(status, seen),
+        status=resolved,
         raw_code=raw_code,
         description=description,
         event_time=event_time,
@@ -130,7 +136,18 @@ def parse_fedex_body(body: dict, source: str = "api") -> list[TrackingSnapshot]:
                 continue
             latest = track.get("latestStatusDetail") or {}
             scans = track.get("scanEvents") or []
-            seen = [FEDEX_CODES.get(str(scan.get("eventType") or scan.get("code") or ""), UNKNOWN) for scan in scans]
+            seen = []
+            delivered_reading = None
+            for scan in scans:
+                scan_code = str(scan.get("eventType") or scan.get("code") or "")
+                scan_status = FEDEX_CODES.get(scan_code, UNKNOWN)
+                seen.append(scan_status)
+                if scan_status == DELIVERED and delivered_reading is None:
+                    delivered_reading = {
+                        "code": scan_code,
+                        "description": str(scan.get("eventDescription") or scan.get("description") or "Delivered"),
+                        "event_time": _fedex_time(scan),
+                    }
             code = str(latest.get("code") or latest.get("eventType") or "")
             description = str(latest.get("statusByLocale") or latest.get("description") or "")
             status = FEDEX_CODES.get(code) or classify_text(code, description)
@@ -142,7 +159,9 @@ def parse_fedex_body(body: dict, source: str = "api") -> list[TrackingSnapshot]:
             event_time = _fedex_time(latest) or (_fedex_time(scans[0]) if scans else None)
             info = track.get("trackingNumberInfo") or {}
             tracking = str(info.get("trackingNumber") or number)
-            snapshots.append(_snapshot("fedex", tracking, status, code, description, event_time, source, seen))
+            snapshots.append(
+                _snapshot("fedex", tracking, status, code, description, event_time, source, seen, delivered_reading)
+            )
     return snapshots
 
 
@@ -188,9 +207,22 @@ def parse_ups_body(body: dict, tracking_hint: str = "", source: str = "api") -> 
                 )
                 continue
             seen: list[str] = []
+            delivered_reading = None
             for activity in activities:
                 status_node = activity.get("status") or {}
-                seen.append(_ups_status(status_node))
+                activity_status = _ups_status(status_node)
+                seen.append(activity_status)
+                if activity_status == DELIVERED and delivered_reading is None:
+                    when = None
+                    if activity.get("gmtDate") and activity.get("gmtTime"):
+                        when = f"{activity['gmtDate']}T{activity['gmtTime']}"
+                    elif activity.get("date"):
+                        when = str(activity.get("date"))
+                    delivered_reading = {
+                        "code": str(status_node.get("code") or status_node.get("type") or "D"),
+                        "description": str(status_node.get("description") or "Delivered"),
+                        "event_time": when,
+                    }
             newest = activities[0] if activities else {}
             status_node = newest.get("status") or {}
             status = _ups_status(status_node) if activities else UNKNOWN
@@ -201,7 +233,9 @@ def parse_ups_body(body: dict, tracking_hint: str = "", source: str = "api") -> 
                 event_time = f"{newest['gmtDate']}T{newest['gmtTime']}"
             elif newest.get("date"):
                 event_time = str(newest.get("date"))
-            snapshots.append(_snapshot("ups", number, status, code, description, event_time, source, seen))
+            snapshots.append(
+                _snapshot("ups", number, status, code, description, event_time, source, seen, delivered_reading)
+            )
     return snapshots
 
 
@@ -233,13 +267,19 @@ def parse_usps_body(body: dict, tracking_hint: str = "", source: str = "api") ->
     status = USPS_CATEGORIES.get(category.strip().lower()) or classify_text(category, description)
     events = body.get("trackingEvents") or []
     seen = []
+    delivered_reading = None
     for event in events:
         event_type = str(event.get("eventType") or "")
-        seen.append(USPS_CATEGORIES.get(event_type.strip().lower()) or classify_text(event_type, event_type))
-    event_time = None
-    if events:
-        event_time = events[0].get("eventTimestamp")
-    return [_snapshot("usps", number, status, category, description, event_time, source, seen)]
+        event_status = USPS_CATEGORIES.get(event_type.strip().lower()) or classify_text(event_type, event_type)
+        seen.append(event_status)
+        if event_status == DELIVERED and delivered_reading is None:
+            delivered_reading = {
+                "code": event_type,
+                "description": event_type or "Delivered",
+                "event_time": event.get("eventTimestamp"),
+            }
+    event_time = events[0].get("eventTimestamp") if events else None
+    return [_snapshot("usps", number, status, category, description, event_time, source, seen, delivered_reading)]
 
 
 def parse_carrier_body(carrier: str, body: dict, tracking_hint: str = "", source: str = "api") -> list[TrackingSnapshot]:

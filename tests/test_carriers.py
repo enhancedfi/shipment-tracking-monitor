@@ -70,13 +70,19 @@ class CarrierHttpTests(unittest.TestCase):
 
     def test_token_refresh_after_unauthorized_track(self):
         clock = FakeClock(NOW)
+        def token_route(method, url):
+            return method == "POST" and url.endswith("/oauth2/v3/token")
+
+        def track_route(method, url):
+            return method == "GET" and "/tracking/" in url
+
         transport = FakeTransport(
             [
-                (lambda method, url: url.endswith("/oauth/token"), 200, {"access_token": "one", "expires_in": 3600}),
-                (lambda method, url: "/tracking/" in url, 401, {"error": "expired"}),
-                (lambda method, url: url.endswith("/oauth/token"), 200, {"access_token": "two", "expires_in": 3600}),
+                (token_route, 200, {"access_token": "one", "expires_in": 3600}),
+                (track_route, 401, {"error": "expired"}),
+                (token_route, 200, {"access_token": "two", "expires_in": 3600}),
                 (
-                    lambda method, url: "/tracking/" in url,
+                    track_route,
                     200,
                     {"trackingNumber": "9400111899223344556677", "statusCategory": "Delivered", "status": "Delivered"},
                 ),
@@ -85,7 +91,7 @@ class CarrierHttpTests(unittest.TestCase):
         client = USPSClient("id", "secret", "https://apis.usps.com", clock, SpacingLimiter(0, clock), RequestBudget(10), transport)
         snapshot = client.track_many(["9400111899223344556677"])[0]
         self.assertEqual(snapshot.status, DELIVERED)
-        self.assertEqual(transport.calls[2]["url"].endswith("/oauth/token"), True)
+        self.assertTrue(transport.calls[2]["url"].endswith("/oauth2/v3/token"))
         self.assertIn("Bearer two", transport.calls[3]["headers"]["Authorization"])
 
     def test_ups_spaces_calls_and_stops_on_429(self):

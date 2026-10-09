@@ -129,12 +129,22 @@ class MonitorTests(unittest.TestCase):
         self.assertTrue(shipment.ever_delivered)
 
     def test_closed_order_never_calls_the_sender(self):
-        shipment = line("a", "riley@example.com", "fedex", "877000000001", order_closed=True)
+        shipment = line("a", "riley@example.com", "fedex", "877000000001", order_closed=True, pending_event=SHIPPED)
         carriers = {"fedex": FixtureClient("fedex", {"877000000001": snap("fedex", "877000000001", SHIPPED)})}
         calls = []
         email = EmailTrigger(self._script(), mode="execute", runner=lambda argv: calls.append(argv) or 0)
-        results = run_check(make_store([shipment]), carriers, FakeClock(NOW), email, persist=False)
-        self.assertEqual(results[0].reason, "closed_order_guard")
+        polled = run_check(make_store([shipment]), carriers, FakeClock(NOW), email, persist=False)
+        self.assertEqual(polled[0].reason, "closed_order_guard")
+        self.assertEqual(carriers["fedex"].calls, [])
+        self.assertEqual(calls, [])
+        webhook = apply_webhook(
+            make_store([line("a", "riley@example.com", "fedex", "877000000001", order_closed=True)]),
+            snap("fedex", "877000000001", SHIPPED),
+            FakeClock(NOW),
+            email,
+            persist=False,
+        )
+        self.assertEqual(webhook[0].reason, "closed_order_guard")
         self.assertEqual(calls, [])
 
     def test_webhook_shipped_after_delivery_is_blocked(self):
