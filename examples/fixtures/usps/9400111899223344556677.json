@@ -1,0 +1,12 @@
+{
+  "trackingNumber": "9400111899223344556677",
+  "statusCategory": "Alert",
+  "status": "Weather delay",
+  "statusSummary": "Weather delay",
+  "trackingEvents": [
+    {
+      "eventType": "Weather delay",
+      "eventTimestamp": "2026-10-09T15:30:00Z"
+    }
+  ]
+}

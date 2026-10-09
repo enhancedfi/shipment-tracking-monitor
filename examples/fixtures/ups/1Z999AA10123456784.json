@@ -1,0 +1,34 @@
+{
+  "trackResponse": {
+    "shipment": [
+      {
+        "inquiryNumber": "1Z999AA10123456784",
+        "package": [
+          {
+            "trackingNumber": "1Z999AA10123456784",
+            "activity": [
+              {
+                "gmtDate": "2026-10-09",
+                "gmtTime": "16:10:00",
+                "status": {
+                  "type": "I",
+                  "code": "OT",
+                  "description": "Out For Delivery"
+                }
+              },
+              {
+                "gmtDate": "2026-10-08",
+                "gmtTime": "14:00:00",
+                "status": {
+                  "type": "P",
+                  "code": "PU",
+                  "description": "Pickup"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "carrier": "fedex",
+  "tracking_number": "877000000001",
+  "status_code": "DL",
+  "status_description": "Delivered",
+  "event_time": "2026-10-09T15:04:00"
+}

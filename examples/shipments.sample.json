@@ -1,0 +1,67 @@
+{
+  "shipments": [
+    {
+      "shipment_id": "north-pier-1",
+      "order_id": "99-100000000000001",
+      "customer_name": "Riley Chen",
+      "customer_email": "riley@example.com",
+      "company": "North Pier Dental",
+      "line": "6165550101",
+      "device": "iPhone 17 256GB Black",
+      "carrier": "fedex",
+      "tracking_number": "877000000001",
+      "order_closed": false,
+      "ever_delivered": false,
+      "status": "pending",
+      "notified_events": []
+    },
+    {
+      "shipment_id": "north-pier-2",
+      "order_id": "99-100000000000001",
+      "customer_name": "Riley Chen",
+      "customer_email": "riley@example.com",
+      "company": "North Pier Dental",
+      "line": "6165550102",
+      "device": "iPhone 17 256GB Blue",
+      "carrier": "ups",
+      "tracking_number": "1Z999AA10123456784",
+      "order_closed": false,
+      "ever_delivered": false,
+      "status": "shipped",
+      "notified_events": ["shipped"],
+      "status_changed_at": "2026-10-08T14:00:00+00:00"
+    },
+    {
+      "shipment_id": "harbor-1",
+      "order_id": "99-100000000000002",
+      "customer_name": "Jordan Blake",
+      "customer_email": "jordan@example.com",
+      "company": "Harbor Books",
+      "line": "6165550199",
+      "device": "Galaxy S26 256GB Black",
+      "carrier": "usps",
+      "tracking_number": "9400111899223344556677",
+      "order_closed": false,
+      "ever_delivered": false,
+      "status": "shipped",
+      "notified_events": ["shipped"],
+      "status_changed_at": "2026-10-08T14:00:00+00:00"
+    },
+    {
+      "shipment_id": "closed-1",
+      "order_id": "99-100000000000003",
+      "customer_name": "Casey Nguyen",
+      "customer_email": "casey@example.com",
+      "company": "Closed Example Co",
+      "line": "6165550177",
+      "device": "iPhone 16 128GB Black",
+      "carrier": "fedex",
+      "tracking_number": "877000000099",
+      "order_closed": true,
+      "ever_delivered": true,
+      "status": "delivered",
+      "notified_events": ["shipped", "delivered"]
+    }
+  ],
+  "email_log": []
+}
