@@ -1,0 +1,23 @@
+{
+  "output": {
+    "completeTrackResults": [
+      {
+        "trackingNumber": "877000000001",
+        "trackResults": [
+          {
+            "trackingNumberInfo": {"trackingNumber": "877000000001"},
+            "latestStatusDetail": {
+              "code": "PU",
+              "statusByLocale": "Picked up",
+              "description": "Picked up"
+            },
+            "scanEvents": [
+              {"eventType": "PU", "date": "2026-10-09", "time": "09:00:00"},
+              {"eventType": "DL", "date": "2026-10-09", "time": "15:04:00"}
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
