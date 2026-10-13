@@ -1,8 +1,9 @@
-"""FedEx, UPS, and USPS tracking clients.
+"""FedEx, UPS, and USPS official tracking API clients.
 
-Calls go to the official REST APIs. OAuth tokens are cached until shortly
-before expiry. Track calls are spaced by a limiter and stopped on HTTP 429.
-There is no HTML scraping fallback.
+Calls go to the REST APIs. OAuth tokens are cached until shortly before
+expiry. Track calls are spaced by a limiter and stopped on HTTP 429.
+These clients are optional. Public tracking pages are read from saved text
+by WebPageClient and do not use the credentials here.
 """
 
 from __future__ import annotations

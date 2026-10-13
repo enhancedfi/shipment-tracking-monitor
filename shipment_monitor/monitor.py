@@ -63,15 +63,25 @@ def run_check(
     cooldown: timedelta = DEFAULT_COOLDOWN,
     force: bool = False,
     persist: bool = True,
+    only_ids: set[str] | None = None,
 ) -> list[CheckResult]:
-    """Poll due tracking numbers, then admit emails under the standing guards."""
+    """Poll due tracking numbers, then admit emails under the standing guards.
+
+    ``only_ids`` limits the pass to those shipments. The delivery-day job
+    uses it so a 30-minute run does not poll the rest of the book.
+    """
     now = clock.now()
     results: list[CheckResult] = []
     candidates: list[_Candidate] = []
     polled_ids: set[str] = set()
 
+    def selected(shipment: Shipment) -> bool:
+        return only_ids is None or shipment.shipment_id in only_ids
+
     grouped: dict[str, list[Shipment]] = {}
     for shipment in store.shipments:
+        if not selected(shipment):
+            continue
         if not due_for_poll(shipment, now, cooldown, force):
             continue
         grouped.setdefault(shipment.carrier, []).append(shipment)
@@ -101,7 +111,7 @@ def run_check(
             _collect(candidates, results, shipment, observation)
 
     for shipment in store.shipments:
-        if shipment.shipment_id in polled_ids:
+        if shipment.shipment_id in polled_ids or not selected(shipment):
             continue
         observation = pending_candidate(shipment)
         if observation is None:
@@ -124,10 +134,25 @@ def run_check(
             continue
         description = shipment.last_description or candidate.event.replace("_", " ")
         event_time = shipment.last_event_at or isoformat(now)
-        trigger = email.send(shipment, candidate.event, description, event_time)
+        siblings = [item for item in store.shipments if item.order_id == shipment.order_id] or [shipment]
+        trigger = email.send(shipment, candidate.event, description, event_time, siblings)
+        if trigger.reason == "waiting_for_order":
+            shipment.pending_event = candidate.event
+            if not shipment.pending_event_at:
+                shipment.pending_event_at = isoformat(now)
+            results.append(CheckResult(shipment.shipment_id, "defer", candidate.event, "waiting_for_order", trigger.argv))
+            continue
+        if email.mode == "execute" and trigger.reason == "dry_run":
+            # The sender refused a live post. Leave the order open and unsent.
+            shipment.pending_event = candidate.event
+            if not shipment.pending_event_at:
+                shipment.pending_event_at = isoformat(now)
+            results.append(CheckResult(shipment.shipment_id, "retry", candidate.event, "dry_run", trigger.argv))
+            continue
         if email.mode == "execute" and trigger.ok and trigger.reason == "sent":
             _mark_sent(store, shipment, candidate.event, now)
             last_sent[shipment.customer_email] = now
+            _close_order_if_delivered(siblings, candidate.event)
             results.append(CheckResult(shipment.shipment_id, "send", candidate.event, "sent", trigger.argv))
             continue
         if email.mode != "execute" and trigger.ok:
@@ -138,6 +163,9 @@ def run_check(
             last_sent[shipment.customer_email] = now
             results.append(CheckResult(shipment.shipment_id, "would_send", candidate.event, "dry_run", trigger.argv))
             continue
+        if trigger.reason == "dominic_notified":
+            for item in siblings:
+                item.dominic_notified = True
         shipment.pending_event = candidate.event
         if not shipment.pending_event_at:
             shipment.pending_event_at = isoformat(now)
@@ -181,15 +209,28 @@ def apply_webhook(
             shipment.pending_event_at = shipment.pending_event_at or isoformat(now)
             results.append(CheckResult(shipment.shipment_id, "defer", candidate.event, "rate_limit_6h"))
             continue
+        siblings = [item for item in store.shipments if item.order_id == shipment.order_id] or [shipment]
         trigger = email.send(
             shipment,
             candidate.event,
             shipment.last_description or candidate.event,
             shipment.last_event_at or isoformat(now),
+            siblings,
         )
+        if trigger.reason == "waiting_for_order":
+            shipment.pending_event = candidate.event
+            shipment.pending_event_at = shipment.pending_event_at or isoformat(now)
+            results.append(CheckResult(shipment.shipment_id, "defer", candidate.event, "waiting_for_order", trigger.argv))
+            continue
+        if email.mode == "execute" and trigger.reason == "dry_run":
+            shipment.pending_event = candidate.event
+            shipment.pending_event_at = shipment.pending_event_at or isoformat(now)
+            results.append(CheckResult(shipment.shipment_id, "retry", candidate.event, "dry_run", trigger.argv))
+            continue
         if email.mode == "execute" and trigger.ok and trigger.reason == "sent":
             _mark_sent(store, shipment, candidate.event, now)
             last_sent[shipment.customer_email] = now
+            _close_order_if_delivered(siblings, candidate.event)
             results.append(CheckResult(shipment.shipment_id, "send", candidate.event, "sent", trigger.argv))
         elif email.mode != "execute" and trigger.ok:
             shipment.pending_event = candidate.event
@@ -197,6 +238,9 @@ def apply_webhook(
             last_sent[shipment.customer_email] = now
             results.append(CheckResult(shipment.shipment_id, "would_send", candidate.event, "dry_run", trigger.argv))
         else:
+            if trigger.reason == "dominic_notified":
+                for item in siblings:
+                    item.dominic_notified = True
             shipment.pending_event = candidate.event
             shipment.pending_event_at = shipment.pending_event_at or isoformat(now)
             results.append(CheckResult(shipment.shipment_id, "retry", candidate.event, trigger.reason, trigger.argv))
@@ -210,6 +254,20 @@ def _collect(candidates: list[_Candidate], results: list[CheckResult], shipment:
         candidates.append(_Candidate(shipment, observation.email_event, observation.reason))
         return
     results.append(CheckResult(shipment.shipment_id, "ignore", None, observation.reason))
+
+
+def _close_order_if_delivered(siblings: list[Shipment], event: str) -> None:
+    """After the consolidated delivered email, retire every line on the order."""
+    if event != DELIVERED:
+        return
+    if not siblings or not all(item.ever_delivered or item.status == DELIVERED for item in siblings):
+        return
+    for item in siblings:
+        item.order_closed = True
+        if DELIVERED not in item.notified_events:
+            item.notified_events.append(DELIVERED)
+        item.pending_event = None
+        item.pending_event_at = None
 
 
 def _mark_sent(store: Store, shipment: Shipment, event: str, now: datetime) -> None:

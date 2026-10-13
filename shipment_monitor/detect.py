@@ -40,6 +40,8 @@ def _remember_reading(shipment: Shipment, snapshot: TrackingSnapshot) -> None:
     shipment.last_description = snapshot.description
     if snapshot.event_time:
         shipment.last_event_at = snapshot.event_time
+    if snapshot.estimated_delivery:
+        shipment.estimated_delivery = snapshot.estimated_delivery
 
 
 def _queue_note(shipment: Shipment, event: str, now: datetime) -> None:
