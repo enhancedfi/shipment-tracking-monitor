@@ -19,9 +19,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from shipment_monitor.cli import main as cli_main
 from shipment_monitor.delivery_day import delivery_day_shipments
 from shipment_monitor.page_source import active_page_targets, tracking_page_url
-from shipment_monitor.store import Store
+from shipment_monitor.store import Store, StoreLockTimeout, exclusive_store_lock
 
 ROOT = Path(__file__).resolve().parent
 
@@ -40,9 +41,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     store_path = Path(args.store)
-    # import and run each take the store lock inside track_shipments.py.
-    # Holding it here as well would deadlock those children.
-    return _run_locked(args, store_path)
+    # One lock covers import and send. The commands run in this process, so
+    # the lock they take re-enters instead of deadlocking a child.
+    try:
+        with exclusive_store_lock(store_path):
+            return _run_locked(args, store_path)
+    except StoreLockTimeout:
+        return 0
 
 
 def _run_locked(args, store_path: Path) -> int:
@@ -116,8 +121,7 @@ def _url_text(store_path: Path, only_numbers: set[str] | None = None) -> str:
 
 
 def _python(*args: str) -> int:
-    completed = subprocess.run([sys.executable, str(ROOT / "track_shipments.py"), *args], check=False)
-    return completed.returncode
+    return cli_main(list(args))
 
 
 if __name__ == "__main__":

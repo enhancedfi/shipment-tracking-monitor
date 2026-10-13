@@ -182,8 +182,8 @@ def parse_estimated_delivery(
     falls on an earlier Eastern day. A month and day with no year, such as
     "Wednesday, October 14" or "Oct 14", uses this year unless that day is
     already more than about 60 days past, in which case it rolls forward.
-    Dec 31 checked on Jan 1 stays in the past year. A date-only scan line,
-    including a numeric date with no clock, is not the ETA.
+    Dec 31 checked on Jan 1 stays in the past year. A numeric date such as
+    10/14/2026 is the ETA. A date-only last-scan line is not.
     Returns None when the page has no estimated-delivery line.
     """
     if now.tzinfo is None:
@@ -207,7 +207,7 @@ def parse_estimated_delivery(
     eastern = now.astimezone(ZoneInfo("America/New_York")).date()
     found: list[tuple[int, datetime]] = []
     for match in DATE_TIME.finditer(window):
-        if _is_scan_date(window, match.start(), match.end(), match.group("date")):
+        if match.group("time") or _is_scan_date(window, match.start(), match.end(), match.group("date")):
             continue
         day = _parse_date(match.group("date"))
         if day is not None:
@@ -522,24 +522,42 @@ def _named_eta_date(match: re.Match[str], today) -> datetime | None:
     return _infer_yearless_date(month, day, today)
 
 
+def _content_lines(text: str) -> list[str]:
+    lines = []
+    for line in text.splitlines():
+        cleaned = line.strip().strip(":").strip("-").strip()
+        if cleaned:
+            lines.append(cleaned)
+    return lines
+
+
+def _previous_lines(window: str, start: int) -> list[str]:
+    """Completed lines before this date. A weekday on the same line stays the ETA."""
+    head = window[:start]
+    newline = head.rfind("\n")
+    if newline == -1:
+        return []
+    return _content_lines(head[:newline])
+
+
 def _is_scan_date(window: str, start: int, end: int, date_text: str) -> bool:
     """True when this date is a tracking scan, not the estimated-delivery day.
 
-    A clock glued to the date is a scan. So is a numeric date that is not
-    followed by "by <time>", including a date-only last line. A status phrase
-    on the next line is a scan as well.
+    A clock glued to the date is a scan. So is a status phrase or a location
+    on the neighboring line. A numeric ETA such as 10/14/2026 is kept. A
+    date-only line that trails other text in the delivery window is a scan.
     """
     if _CLOCK_AFTER.match(window[end : end + 64]):
         return True
-    lines = [line.strip() for line in window[end:].splitlines() if line.strip()]
-    if lines and re.match(r"by\b", lines[0], re.IGNORECASE):
+    after = _content_lines(window[end:])
+    if after and re.match(r"by\b", after[0], re.IGNORECASE):
         return False
-    if "/" in date_text:
-        return True
-    before = [line.strip() for line in window[:start].splitlines() if line.strip()]
+    before = _previous_lines(window, start)
     if before and _looks_like_location(before[-1]):
         return True
-    if lines and _phrase_status(lines[0]) is not None:
+    if after and _phrase_status(after[0]) is not None:
+        return True
+    if "/" in date_text and before and not after:
         return True
     return False
 

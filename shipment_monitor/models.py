@@ -87,6 +87,7 @@ class Shipment:
     lookup_email: str = ""
     lookup_zip: str = ""
     estimated_delivery: str | None = None
+    dominic_notified: bool = False
 
     def __post_init__(self) -> None:
         self.carrier = normalize_carrier(self.carrier) if self.carrier else self.carrier
@@ -120,6 +121,7 @@ class Shipment:
             "lookup_email": self.lookup_email,
             "lookup_zip": self.lookup_zip,
             "estimated_delivery": self.estimated_delivery,
+            "dominic_notified": self.dominic_notified,
         }
 
     @classmethod
@@ -162,6 +164,7 @@ class Shipment:
             lookup_email=str(raw.get("lookup_email") or ""),
             lookup_zip=str(raw.get("lookup_zip") or ""),
             estimated_delivery=raw.get("estimated_delivery") or None,
+            dominic_notified=bool(raw.get("dominic_notified", False)),
         )
 
 

@@ -156,6 +156,9 @@ def run_check(
             last_sent[shipment.customer_email] = now
             results.append(CheckResult(shipment.shipment_id, "would_send", candidate.event, "dry_run", trigger.argv))
             continue
+        if trigger.reason == "dominic_notified":
+            for item in siblings:
+                item.dominic_notified = True
         shipment.pending_event = candidate.event
         if not shipment.pending_event_at:
             shipment.pending_event_at = isoformat(now)
@@ -223,6 +226,9 @@ def apply_webhook(
             last_sent[shipment.customer_email] = now
             results.append(CheckResult(shipment.shipment_id, "would_send", candidate.event, "dry_run", trigger.argv))
         else:
+            if trigger.reason == "dominic_notified":
+                for item in siblings:
+                    item.dominic_notified = True
             shipment.pending_event = candidate.event
             shipment.pending_event_at = shipment.pending_event_at or isoformat(now)
             results.append(CheckResult(shipment.shipment_id, "retry", candidate.event, trigger.reason, trigger.argv))

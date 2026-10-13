@@ -11,15 +11,19 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
+from shipment_monitor.carriers import FixtureClient
+from shipment_monitor.clock import FakeClock
 from shipment_monitor.email_trigger import EmailTrigger
-from shipment_monitor.models import Shipment
+from shipment_monitor.models import SHIPPED, TrackingSnapshot, Shipment
+from shipment_monitor.monitor import run_check
+from shipment_monitor.store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
 SENDER_PATH = ROOT / "customer-comms" / "send-shipment-updates.py"
 EXAMPLE = ROOT / "customer-comms" / "contacts.example.json"
 ORDER_ID = "99-EXAMPLE000000001"
 TRACKING_URL = "https://www.ups.com/track?tracknum=1Z999AA10123456784"
-ORDER_URL = "https://www.att.com/acctmgmt/order/details?email=ada%40example.com&zip=49503"
+ORDER_URL = "https://www.att.com/acctmgmt/order/details?email=ada%40example.com&zip=99999"
 ALLOWED_EMAILS = {"ava@enhancedfi.pro", "dom@enhancedfi.com", "ada@example.com"}
 
 _RESEND_DIR = None
@@ -93,7 +97,7 @@ class SenderRuleTests(unittest.TestCase):
         os.environ.pop("SHIPMENT_WATCH_STATE", None)
         os.environ["RESEND_STUB_LOG"] = str(self.log)
         os.environ["RESEND_EMAIL_STATUS"] = "202"
-        os.environ.pop("SHIPMENT_ALLOW_EMAIL", None)
+        os.environ["SHIPMENT_ALLOW_EMAIL"] = "1"
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -108,7 +112,7 @@ class SenderRuleTests(unittest.TestCase):
         self.assertIn("AT&T order status:", payload["text"])
         self.assertIn(TRACKING_URL, payload["html"])
         self.assertIn("acctmgmt/order/details", payload["html"])
-        self.assertIn("zip=49503", payload["html"])
+        self.assertIn("zip=99999", payload["html"])
         self.assertEqual(len(_posts(self.log)), 1)
 
     def test_a_missing_link_is_left_out(self):
@@ -131,10 +135,116 @@ class SenderRuleTests(unittest.TestCase):
         _write_state(self.state, _staged(order_id="99-NOT-LISTED"))
         with self.assertLogsStdout() as stdout:
             code = SENDER.main()
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 5)
         self.assertIn("DOMINIC-NOTIFY", stdout)
         self.assertIn("no CONTACTS entry", stdout)
+        self.assertNotIn("ada@example.com", stdout.value())
+        self.assertNotIn("@", stdout.value())
         self.assertEqual(_posts(self.log), [])
+        recorded = json.loads((self.root / "comms" / "dominic-notify.json").read_text(encoding="utf-8"))
+        self.assertIn("99-NOT-LISTED", recorded)
+        with self.assertLogsStdout() as again:
+            self.assertEqual(SENDER.main(), 5)
+        self.assertNotIn("DOMINIC-NOTIFY", again)
+        self.assertNotIn("@", again.value())
+
+    def test_live_send_masks_the_customer_email(self):
+        _write_state(self.state, _staged())
+        with self.assertLogsStdout() as stdout:
+            self.assertEqual(SENDER.main(), 0)
+        text = stdout.value()
+        self.assertIn("a***@example.com", text)
+        self.assertNotIn("ada@example.com", text)
+        self.assertEqual(len(_posts(self.log)), 1)
+
+    def test_staged_send_is_a_dry_run_unless_email_is_allowed(self):
+        os.environ.pop("SHIPMENT_ALLOW_EMAIL", None)
+        _write_state(self.state, _staged(tracking_url=TRACKING_URL, order_status_url=ORDER_URL))
+        with self.assertLogsStdout() as stdout:
+            self.assertEqual(SENDER.main(), 0)
+        text = stdout.value()
+        self.assertIn("DRY-RUN", text)
+        self.assertIn("Your Phone A is on its way!", text)
+        self.assertNotIn("ada@example.com", text)
+        self.assertEqual(_posts(self.log), [])
+        self.assertEqual(_requests(self.log), [])
+        ledger_path = self.root / "comms" / "notified-shipments.json"
+        if ledger_path.exists():
+            self.assertNotIn("shipped", ledger_path.read_text(encoding="utf-8"))
+        os.environ["SHIPMENT_ALLOW_EMAIL"] = "1"
+        self.assertEqual(SENDER.main(), 0)
+        self.assertEqual(len(_posts(self.log)), 1)
+
+    def test_watch_batch_is_a_dry_run_unless_email_is_allowed(self):
+        os.environ.pop("SHIPMENT_ALLOW_EMAIL", None)
+        os.environ.pop("SHIPMENT_EMAIL_STATE", None)
+        watch = self.root / "watch.json"
+        watch.write_text(json.dumps(_watch_state()), encoding="utf-8")
+        os.environ["SHIPMENT_WATCH_STATE"] = str(watch)
+        self.contacts.unlink()
+        _write_private(self.contacts, _book(skip=[ORDER_ID]))
+        with self.assertLogsStdout() as stdout:
+            self.assertEqual(SENDER.main(), 0)
+        self.assertIn("DRY-RUN", stdout)
+        self.assertNotIn("ada@example.com", stdout.value())
+        self.assertEqual(_requests(self.log), [])
+        os.environ["SHIPMENT_ALLOW_EMAIL"] = "1"
+        self.assertEqual(SENDER.main(), 0)
+        self.assertEqual(len(_posts(self.log)), 1)
+
+    def test_watch_missing_contact_notifies_once_without_an_email(self):
+        os.environ.pop("SHIPMENT_EMAIL_STATE", None)
+        watch = self.root / "watch.json"
+        payload = _watch_state()
+        payload["orders"][0]["order_id"] = "99-NOT-LISTED"
+        payload["orders"][0]["label"] = "buyer@example.com"
+        watch.write_text(json.dumps(payload), encoding="utf-8")
+        os.environ["SHIPMENT_WATCH_STATE"] = str(watch)
+        with self.assertLogsStdout() as first:
+            self.assertEqual(SENDER.main(), 0)
+        self.assertIn("DOMINIC-NOTIFY", first)
+        self.assertIn("b***@example.com", first.value())
+        self.assertNotIn("buyer@example.com", first.value())
+        self.assertEqual(_posts(self.log), [])
+        with self.assertLogsStdout() as second:
+            self.assertEqual(SENDER.main(), 0)
+        self.assertNotIn("DOMINIC-NOTIFY", second)
+        self.assertNotIn("@", second.value())
+
+    def test_monitor_records_dominic_notify_on_the_order(self):
+        seen = []
+
+        def runner(_argv):
+            payload = json.loads(self.state.read_text(encoding="utf-8"))
+            seen.append(bool(payload.get("dominic_notified")))
+            self.assertNotIn("--order-status-url", _argv)
+            self.assertNotIn("acctmgmt/order/details", " ".join(_argv))
+            self.assertIn("acctmgmt/order/details", payload["order_status_url"])
+            return 5
+
+        shipment = _shipment()
+        shipment.status = "pending"
+        trigger = EmailTrigger(SENDER_PATH, mode="execute", runner=runner, state_path=self.state)
+        store = Store(self.root / "shipments.json")
+        store.shipments = [shipment]
+        snapshot = TrackingSnapshot(
+            "ups",
+            shipment.tracking_number,
+            SHIPPED,
+            description="On the way",
+            event_time="2026-10-13T12:00:00+00:00",
+        )
+        client = FixtureClient("ups", {shipment.tracking_number: snapshot})
+        now = datetime(2026, 10, 13, 16, tzinfo=timezone.utc)
+        results = run_check(store, {"ups": client}, FakeClock(now), trigger, persist=True, force=True)
+        self.assertEqual(results[0].reason, "dominic_notified")
+        self.assertTrue(shipment.dominic_notified)
+        self.assertNotIn(SHIPPED, shipment.notified_events)
+        self.assertTrue(Store(store.path).load().shipments[0].dominic_notified)
+        results = run_check(store, {"ups": client}, FakeClock(now), trigger, persist=True, force=True)
+        self.assertEqual(seen, [False, True])
+        self.assertEqual(results[0].reason, "dominic_notified")
+        self.assertNotIn(SHIPPED, shipment.notified_events)
 
     def test_loose_contacts_file_is_refused(self):
         loose = self.root / "loose.json"
@@ -220,7 +330,7 @@ class SenderRuleTests(unittest.TestCase):
         payload = _posts(self.log)[0]
         self.assertIn("track?tracknum=1Z999AA10123456784", payload["text"])
         self.assertIn("acctmgmt/order/details", payload["text"])
-        self.assertIn("zip=49503", payload["text"])
+        self.assertIn("zip=99999", payload["text"])
 
         os.environ["RESEND_EMAIL_STATUS"] = "500"
         failed = self.root / "failed.email.json"
@@ -271,8 +381,11 @@ class _Stdout:
     def __contains__(self, item):
         return item in self.buffer.getvalue()
 
+    def value(self):
+        return self.buffer.getvalue()
 
-def _book():
+
+def _book(skip=None):
     return json.dumps({
         "contacts": {
             ORDER_ID: {
@@ -281,8 +394,34 @@ def _book():
                 "account": "Example Studio",
             }
         },
-        "skip_status_quo": [],
+        "skip_status_quo": list(skip or []),
     })
+
+
+def _watch_state():
+    return {
+        "orders": [
+            {
+                "order_id": ORDER_ID,
+                "label": "Example Studio",
+                "lines": [
+                    {
+                        "device": "Phone A",
+                        "line_ending": "0101",
+                        "carrier": "ups",
+                        "tracking": "1Z999AA10123456784",
+                        "status": "shipped",
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def _requests(path: Path) -> list:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def _write_private(path: Path, text: str) -> None:
@@ -359,7 +498,7 @@ def _shipment() -> Shipment:
         tracking_number="1Z999AA10123456784",
         status="shipped",
         lookup_email="buyer@example.com",
-        lookup_zip="49503",
+        lookup_zip="99999",
     )
 
 

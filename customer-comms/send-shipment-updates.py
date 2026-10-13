@@ -60,11 +60,36 @@ _MONTHS = {name: index for index, name in enumerate(
 _EXIT = {
     "sent": 0,
     "skipped": 0,
+    "dry_run": 0,
     "waiting": 4,
     "throttled": 3,
     "failed": 1,
     "missing": 2,
+    "notify": 5,
 }
+
+
+def sends_live():
+    """A live Resend post requires SHIPMENT_ALLOW_EMAIL=1. Every other mode is a dry run."""
+    return os.environ.get("SHIPMENT_ALLOW_EMAIL") == "1"
+
+
+def mask_email(address):
+    """Keep a customer address out of stdout and cron output."""
+    text = str(address or "").strip()
+    if "@" not in text:
+        return "***"
+    local, _, domain = text.partition("@")
+    if not local or not domain:
+        return "***"
+    return f"{local[0]}***@{domain}"
+
+
+def _public_label(label):
+    text = str(label or "?").strip() or "?"
+    if "@" in text:
+        return mask_email(text)
+    return text
 
 
 def comms_dir():
@@ -312,6 +337,12 @@ def domain_verified():
 def send_email(to, subject, text, html_extra=""):
     full_text = text.rstrip("\n") + "\n" + SIGNATURE
     full_html = text_to_html(text.rstrip("\n")) + html_extra + SIGNATURE_HTML
+    if not sends_live():
+        print("DRY-RUN: customer email was not sent. Set SHIPMENT_ALLOW_EMAIL=1 to send.")
+        print(f"To: {mask_email(to)}")
+        print(f"Subject: {subject}")
+        print(full_text)
+        return "dry-run", full_text, full_html
     payload = {
         "from": FROM,
         "to": [to],
@@ -473,7 +504,7 @@ def log_send(contact, line, event, subject, msg_id, notify=True):
     if notify:
         print(
             f"DOMINIC-NOTIFY: {event} email sent to {contact['account']} "
-            f"({contact['email']}), {line.get('device')} line ...{line.get('line_ending')}"
+            f"({mask_email(contact['email'])}), {line.get('device')} line ...{line.get('line_ending')}"
             + (f", tracking {tracking}" if tracking else "")
             + f" | subject: {subject}"
         )
@@ -497,6 +528,8 @@ def maybe_send_shipped_batch(contact, order_id, lines, ledger, throttle_ledger, 
     except Exception as exc:
         print(f"FAILED shipped batch email for {contact['account']}: {exc}")
         return "failed"
+    if msg_id == "dry-run":
+        return "dry_run"
     for line in new_lines:
         ledger[f"{order_id}:{line.get('line_ending')}:shipped"] = now
         log_send(contact, line, "shipped", subject, msg_id, notify=False)
@@ -506,11 +539,11 @@ def maybe_send_shipped_batch(contact, order_id, lines, ledger, throttle_ledger, 
     trackings = sorted({line.get("tracking") for line in new_lines if line.get("tracking")})
     print(
         f"DOMINIC-NOTIFY: shipped email sent to {contact['account']} "
-        f"({contact['email']}), {len(new_lines)} phone(s): {devices}"
+        f"({mask_email(contact['email'])}), {len(new_lines)} phone(s): {devices}"
         + (f", tracking {', '.join(trackings)}" if trackings else "")
         + f" | subject: {subject}"
     )
-    print(f"Sent shipped update to {contact['email']} ({len(new_lines)} lines, 1 email)")
+    print(f"Sent shipped update to {mask_email(contact['email'])} ({len(new_lines)} lines, 1 email)")
     return "sent"
 
 
@@ -584,6 +617,8 @@ def maybe_send_status_quo(contact, order_id, pending, windows, quo_ledger, now):
     except Exception as exc:
         print(f"FAILED status-quo email for {order_id}: {exc}")
         return "failed"
+    if msg_id == "dry-run":
+        return "dry_run"
     quo_ledger[order_id] = now
     log_send(
         contact,
@@ -593,7 +628,7 @@ def maybe_send_status_quo(contact, order_id, pending, windows, quo_ledger, now):
         msg_id,
     )
     print(
-        f"Sent status-quo update to {contact['email']} "
+        f"Sent status-quo update to {mask_email(contact['email'])} "
         f"({contact['account']}, {len(pending)} pending)"
     )
     return "sent"
@@ -608,6 +643,8 @@ def send_final_delivered(contact, order_id, lines, ledger, now):
     except Exception as exc:
         print(f"FAILED final-delivered email for {contact['account']}: {exc}")
         return "failed"
+    if msg_id == "dry-run":
+        return "dry_run"
     ledger[f"{order_id}:final-delivered"] = now
     log_send(
         contact,
@@ -617,7 +654,7 @@ def send_final_delivered(contact, order_id, lines, ledger, now):
         msg_id,
     )
     print(
-        f"Sent final delivered email to {contact['email']} "
+        f"Sent final delivered email to {mask_email(contact['email'])} "
         f"({contact['account']}, {len(lines)} lines)"
     )
     return "sent"
@@ -637,6 +674,8 @@ def send_progress(contact, order_id, line, event, description, ledger, throttle_
     except Exception as exc:
         print(f"FAILED {event} email for {contact['account']}: {exc}")
         return "failed"
+    if msg_id == "dry-run":
+        return "dry_run"
     ledger[key] = now
     record_throttle(throttle_ledger, contact["email"], event)
     log_send(contact, line, event, subject, msg_id)
@@ -826,6 +865,8 @@ def process_watch_order(order, contact, skip_status_quo, ledger, throttle_ledger
             return "failed"
         if batch == "sent":
             outcome = "sent"
+        elif batch == "dry_run" and outcome != "sent":
+            outcome = "dry_run"
     for line in lines:
         ending = line.get("line_ending", "")
         status = (line.get("status") or "").lower()
@@ -852,6 +893,8 @@ def process_watch_order(order, contact, skip_status_quo, ledger, throttle_ledger
             return "failed"
         if quo == "sent":
             outcome = "sent"
+        elif quo == "dry_run" and outcome != "sent":
+            outcome = "dry_run"
     return outcome
 
 
@@ -872,6 +915,39 @@ def _save_ledgers(ledgers):
     _write_private(_ledger("about-to-ship.json"), json.dumps(ledgers["about"], indent=2) + "\n")
 
 
+def _dominic_ledger_path():
+    return _ledger("dominic-notify.json")
+
+
+def _dominic_already(order_id, flagged):
+    if flagged:
+        return True
+    recorded = load_json(_dominic_ledger_path(), {})
+    return str(order_id) in recorded
+
+
+def _record_dominic(order_id):
+    path = _dominic_ledger_path()
+    recorded = load_json(path, {})
+    key = str(order_id)
+    if key in recorded:
+        return
+    recorded[key] = datetime.now(timezone.utc).isoformat()
+    _write_private(path, json.dumps(recorded, indent=2) + "\n")
+
+
+def _notify_missing_contact(order_id, label, flagged):
+    """Print DOMINIC-NOTIFY once per order. Never include a customer email."""
+    if _dominic_already(order_id, flagged):
+        return "notify"
+    print(
+        f"DOMINIC-NOTIFY: order {order_id} ({_public_label(label)}) "
+        "is in the watch state but has no CONTACTS entry; no customer emails can be sent for it."
+    )
+    _record_dominic(order_id)
+    return "notify"
+
+
 def send_staged(path):
     state = load_json(path, None)
     if not isinstance(state, dict):
@@ -881,17 +957,18 @@ def send_staged(path):
     if book is None:
         return 2
     contacts, _skip = book
-    if not domain_verified():
+    if sends_live() and not domain_verified():
         print("enhancedfi.pro not verified in Resend yet; skipping sends.")
         return 1
     order = order_from_staged(state)
     contact = contacts.get(order["order_id"])
     if not contact:
-        print(
-            f"DOMINIC-NOTIFY: order {order['order_id']} ({order.get('label', '?')}) "
-            "is in the watch state but has no CONTACTS entry; no customer emails can be sent for it."
+        _notify_missing_contact(
+            order["order_id"],
+            order.get("label", "?"),
+            state.get("dominic_notified"),
         )
-        return 2
+        return _EXIT["notify"]
     ledgers = _load_ledgers()
     now = datetime.now(timezone.utc).isoformat()
     try:
@@ -902,7 +979,7 @@ def send_staged(path):
 
 
 def send_watch(path):
-    if not domain_verified():
+    if sends_live() and not domain_verified():
         print("enhancedfi.pro not verified in Resend yet; skipping sends.")
         return 0
     book = load_contact_book()
@@ -920,11 +997,7 @@ def send_watch(path):
             contact = contacts.get(order_id)
             if not contact:
                 if order.get("lines"):
-                    print(
-                        f"DOMINIC-NOTIFY: order {order_id} ({order.get('label', '?')}) "
-                        "is in the watch state but has no CONTACTS entry; "
-                        "no customer emails can be sent for it."
-                    )
+                    _notify_missing_contact(order_id, order.get("label", "?"), order.get("dominic_notified"))
                 continue
             result = process_watch_order(
                 order,

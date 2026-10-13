@@ -17,8 +17,8 @@ from shipment_monitor.page_text import parse_tracking_page
 ROOT = Path(__file__).resolve().parents[1]
 PAGES = ROOT / "examples" / "page-text"
 SAMPLE = ROOT / "examples" / "shipments.sample.json"
-PREPARING = "1ZH4K6592930123854"
-ON_VEHICLE = "1ZH4K6592920755842"
+PREPARING = "1Z999AA10123456784"
+ON_VEHICLE = "1Z999AA10987654321"
 
 
 def _page(number: str) -> str:
@@ -66,7 +66,7 @@ class PageTextTests(unittest.TestCase):
                 "Shipment Progress",
                 "10/13/2026 7:52 AM",
                 "Processing at UPS Facility",
-                "Wyoming, MI",
+                "Faketown, ZZ",
             ]
         )
         snapshot = parse_tracking_page("ups", text, PREPARING)
@@ -81,11 +81,11 @@ class PageTextTests(unittest.TestCase):
                 "10/13/2026",
                 "4:00 P.M.",
                 "Delivered",
-                "Wyoming, MI",
+                "Faketown, ZZ",
                 "10/13/2026",
                 "8:00 A.M.",
                 "Pickup Scan",
-                "Grand Rapids, MI",
+                "Faketown, ZZ",
             ]
         )
         snapshot = parse_tracking_page("ups", text, "1Z999AA10123456784")
@@ -104,7 +104,7 @@ class PageTextTests(unittest.TestCase):
                 "Oct 13, 2026",
                 "6:12 AM",
                 "Arrived at FedEx location",
-                "Wyoming, MI",
+                "Faketown, ZZ",
             ]
         )
         out = "\n".join(
@@ -113,7 +113,7 @@ class PageTextTests(unittest.TestCase):
                 "Travel History",
                 "Oct 13, 2026 8:36 AM",
                 "On FedEx vehicle for delivery",
-                "Wyoming, MI",
+                "Faketown, ZZ",
             ]
         )
         delayed = "\n".join(
@@ -122,7 +122,7 @@ class PageTextTests(unittest.TestCase):
                 "Travel History",
                 "Oct 13, 2026 5:01 AM",
                 "Weather delay",
-                "Wyoming, MI",
+                "Faketown, ZZ",
             ]
         )
         self.assertEqual(parse_tracking_page("fedex", on_the_way, "877000000010").status, SHIPPED)

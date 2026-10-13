@@ -25,7 +25,7 @@ from shipment_monitor.schedule import (
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGES = ROOT / "examples" / "page-text"
-PREPARING = "1ZH4K6592930123854"
+PREPARING = "1Z999AA10123456784"
 
 
 class ScheduleTests(unittest.TestCase):
@@ -263,7 +263,7 @@ def _env(log: Path, allow: bool) -> dict[str, str]:
     return env
 
 
-def _row(status: str, last_checked_at: str | None, company: str = "North Pier Dental") -> dict:
+def _row(status: str, last_checked_at: str | None, company: str = "Example Dental") -> dict:
     return {
         "shipment_id": "prep",
         "order_id": "99-1",

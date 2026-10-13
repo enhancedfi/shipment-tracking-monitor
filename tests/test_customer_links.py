@@ -1,4 +1,4 @@
-"""Order-status links, ETA-today delivery day, and the Pyramids UPS page text."""
+"""Order-status links, ETA-today delivery day, and sample UPS page text."""
 
 import json
 import os
@@ -24,38 +24,42 @@ from shipment_monitor.store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGES = ROOT / "examples" / "page-text"
-PREPARING = "1ZH4K6592930123854"
-ON_VEHICLE = "1ZH4K6592920755842"
+PREPARING = "1Z999AA10123456784"
+ON_VEHICLE = "1Z999AA10987654321"
 EASTERN = ZoneInfo("America/New_York")
 CAPTURED = datetime(2026, 10, 13, 16, 0, tzinfo=EASTERN)
 
 
 class OrderLinkTests(unittest.TestCase):
     def test_link_is_built_from_recorded_lookup_email_and_zip(self):
-        url = order_status_url("buyer@pyramids.example", "49503")
+        url = order_status_url("buyer@example.com", "99999")
         self.assertEqual(
             url,
-            "https://www.att.com/acctmgmt/order/details?email=buyer%40pyramids.example&zip=49503",
+            "https://www.att.com/acctmgmt/order/details?email=buyer%40example.com&zip=99999",
         )
-        shipment = _line(lookup_email="buyer@pyramids.example", lookup_zip="49503")
+        shipment = _line(lookup_email="buyer@example.com", lookup_zip="99999")
         tracking, tracking_html, order, order_html = email_links(shipment)
         self.assertEqual(tracking, f"https://www.ups.com/track?tracknum={PREPARING}")
         self.assertIn(f'<a href="{tracking}">Track shipment</a>', tracking_html)
         self.assertEqual(order, url)
         self.assertIn("<a href=", order_html)
         self.assertIn("acctmgmt/order/details", order_html)
-        self.assertIn("zip=49503", order_html)
+        self.assertIn("zip=99999", order_html)
         argv = build_argv(Path("send-shipment-updates.py"), shipment, "shipped", "Preparing for Delivery", "2026-10-13T07:52:00")
-        self.assertIn(order_html, argv)
+        self.assertNotIn("--order-status-url", argv)
+        self.assertNotIn("--order-status-link", argv)
+        self.assertNotIn("acctmgmt/order/details", " ".join(argv))
         self.assertIn(tracking_html, argv)
-        self.assertEqual(argv[argv.index("--order-status-url") + 1], url)
+        handoff = email_handoff(shipment, "shipped", "Preparing for Delivery", "2026-10-13T07:52:00")
+        self.assertEqual(handoff["order_status_url"], url)
+        self.assertEqual(handoff["order_status_link"], order_html)
 
     def test_missing_lookup_email_or_zip_omits_the_order_link(self):
-        self.assertIsNone(order_status_url("", "49503"))
-        self.assertIsNone(order_status_url("buyer@pyramids.example", ""))
-        self.assertIsNone(order_status_url("buyer@pyramids.example", "not-a-zip"))
+        self.assertIsNone(order_status_url("", "99999"))
+        self.assertIsNone(order_status_url("buyer@example.com", ""))
+        self.assertIsNone(order_status_url("buyer@example.com", "not-a-zip"))
         customer_only = _line(lookup_email="", lookup_zip="")
-        customer_only.customer_email = "buyer@pyramids.example"
+        customer_only.customer_email = "buyer@example.com"
         _tracking, tracking_html, order, order_html = email_links(customer_only)
         self.assertIsNone(order)
         self.assertIsNone(order_html)
@@ -66,24 +70,24 @@ class OrderLinkTests(unittest.TestCase):
         self.assertNotIn("acctmgmt/order/details", " ".join(argv))
         self.assertIn("--tracking-link", argv)
 
-        zip_only = _line(lookup_email="", lookup_zip="49503")
+        zip_only = _line(lookup_email="", lookup_zip="99999")
         self.assertIsNone(order_status_url(zip_only.lookup_email, zip_only.lookup_zip))
-        email_only = _line(lookup_email="buyer@pyramids.example", lookup_zip="")
+        email_only = _line(lookup_email="buyer@example.com", lookup_zip="")
         self.assertIsNone(email_links(email_only)[2])
 
     def test_orders_json_copies_lookup_onto_shipment_records(self):
         document = {
             "orders": [
                 {
-                    "order_id": "99-pyramids",
-                    "lookup_email": "buyer@pyramids.example",
-                    "lookup_zip": "49503",
+                    "order_id": "99-sample",
+                    "lookup_email": "buyer@example.com",
+                    "lookup_zip": "99999",
                     "customer_name": "Riley Chen",
                     "customer_email": "riley@example.com",
-                    "company": "Pyramids",
+                    "company": "Example Studio",
                     "shipments": [
                         {
-                            "shipment_id": "pyramids-1",
+                            "shipment_id": "sample-1",
                             "line": "6165550101",
                             "device": "iPhone 17",
                             "carrier": "ups",
@@ -94,10 +98,10 @@ class OrderLinkTests(unittest.TestCase):
             ]
         }
         shipments = load_shipments_document(document)
-        self.assertEqual(shipments[0].lookup_email, "buyer@pyramids.example")
-        self.assertEqual(shipments[0].lookup_zip, "49503")
+        self.assertEqual(shipments[0].lookup_email, "buyer@example.com")
+        self.assertEqual(shipments[0].lookup_zip, "99999")
         self.assertEqual(shipments[0].customer_email, "riley@example.com")
-        self.assertEqual(shipments[0].company, "Pyramids")
+        self.assertEqual(shipments[0].company, "Example Studio")
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "shipments.json"
             incoming = Path(tmp) / "orders.json"
@@ -111,14 +115,14 @@ class OrderLinkTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             saved = Store(path).load()
-            self.assertEqual(saved.shipments[0].lookup_email, "buyer@pyramids.example")
-            self.assertEqual(saved.shipments[0].lookup_zip, "49503")
+            self.assertEqual(saved.shipments[0].lookup_email, "buyer@example.com")
+            self.assertEqual(saved.shipments[0].lookup_zip, "99999")
 
     def test_sender_argv_includes_the_rendered_anchors(self):
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "send-shipment-updates.py"
             script.write_text("raise SystemExit(0)\n", encoding="utf-8")
-            shipment = _line(lookup_email="buyer@pyramids.example", lookup_zip="49503", status="pending")
+            shipment = _line(lookup_email="buyer@example.com", lookup_zip="99999", status="pending")
             calls = []
             email = EmailTrigger(script, mode="execute", runner=lambda argv: calls.append(list(argv)) or 0)
             store = Store(Path(tmp) / "shipments.json")
@@ -132,27 +136,30 @@ class OrderLinkTests(unittest.TestCase):
             results = run_check(store, carriers, FakeClock(CAPTURED), email, persist=False)
             self.assertEqual(results[0].action, "send", results[0].reason)
             sent = calls[0]
-            order_html = sent[sent.index("--order-status-link") + 1]
+            self.assertNotIn("--order-status-url", sent)
+            self.assertNotIn("--order-status-link", sent)
+            self.assertNotIn("acctmgmt/order/details", " ".join(sent))
             tracking_html = sent[sent.index("--tracking-link") + 1]
-            self.assertIn('<a href="https://www.att.com/acctmgmt/order/details?', order_html)
-            self.assertIn("zip=49503", order_html)
             self.assertIn(f'<a href="https://www.ups.com/track?tracknum={PREPARING}">', tracking_html)
+            handoff = email_handoff(shipment, "shipped", "Preparing for Delivery", "2026-10-13T07:52:00")
+            self.assertIn("acctmgmt/order/details", handoff["order_status_url"])
+            self.assertIn("zip=99999", handoff["order_status_url"])
 
     def test_rendered_email_body_contains_the_order_and_tracking_links(self):
-        shipment = _line(lookup_email="buyer@pyramids.example", lookup_zip="49503", status="pending")
+        shipment = _line(lookup_email="buyer@example.com", lookup_zip="99999", status="pending")
         _tracking, tracking_html, order_url, order_html = email_links(shipment)
         body = render_email_body(shipment, "shipped", "Preparing for Delivery")
         self.assertIn(tracking_html, body)
         self.assertIn(order_html, body)
         self.assertIn(f"https://www.ups.com/track?tracknum={PREPARING}", body)
         self.assertIn("https://www.att.com/acctmgmt/order/details?", body)
-        self.assertIn("zip=49503", body)
-        self.assertEqual(order_url, "https://www.att.com/acctmgmt/order/details?email=buyer%40pyramids.example&zip=49503")
+        self.assertIn("zip=99999", body)
+        self.assertEqual(order_url, "https://www.att.com/acctmgmt/order/details?email=buyer%40example.com&zip=99999")
         handoff = email_handoff(shipment, "shipped", "Preparing for Delivery", "2026-10-13T07:52:00")
         self.assertEqual(handoff["body"], body)
         self.assertEqual(
             handoff["order_status_url"],
-            "https://www.att.com/acctmgmt/order/details?email=buyer%40pyramids.example&zip=49503",
+            "https://www.att.com/acctmgmt/order/details?email=buyer%40example.com&zip=99999",
         )
         self.assertEqual(handoff["tracking_url"], f"https://www.ups.com/track?tracknum={PREPARING}")
         with tempfile.TemporaryDirectory() as tmp:
@@ -187,7 +194,7 @@ class OrderLinkTests(unittest.TestCase):
             self.assertIn(tracking_html, rendered)
             self.assertIn(order_html, rendered)
             self.assertIn("acctmgmt/order/details", rendered)
-            self.assertIn("zip=49503", rendered)
+            self.assertIn("zip=99999", rendered)
             self.assertIn(f"track?tracknum={PREPARING}", rendered)
             self.assertEqual(int(mode_path.read_text(encoding="utf-8")), 0o600)
             self.assertFalse(state_path.exists())
@@ -197,7 +204,7 @@ class OrderLinkTests(unittest.TestCase):
 
 
 class DeliveryDayTests(unittest.TestCase):
-    def test_pyramids_ups_pages_estimate_today(self):
+    def test_sample_ups_pages_estimate_today(self):
         for number in (PREPARING, ON_VEHICLE):
             eta = parse_estimated_delivery(_page(number), CAPTURED)
             self.assertEqual(eta, "2026-10-13", number)
@@ -212,7 +219,7 @@ class DeliveryDayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pages = Path(tmp)
             (pages / f"{PREPARING}.txt").write_text(_page(PREPARING), encoding="utf-8")
-            later = "1Z999AA10123456784"
+            later = "1Z999AA10000000001"
             (pages / f"{later}.txt").write_text(
                 "\n".join(
                     [
@@ -224,7 +231,7 @@ class DeliveryDayTests(unittest.TestCase):
                         "10/13/2026",
                         "7:52 A.M.",
                         "In transit",
-                        "Wyoming, MI",
+                        "Faketown, ZZ",
                     ]
                 ),
                 encoding="utf-8",
@@ -233,7 +240,7 @@ class DeliveryDayTests(unittest.TestCase):
             in_transit = _line(shipment_id="later", tracking=later, status=SHIPPED)
             on_truck = _line(
                 shipment_id="truck",
-                tracking="1ZH4K6592900000000",
+                tracking="1Z999AA10000000002",
                 status=OUT_FOR_DELIVERY,
                 estimated_delivery="2026-10-16",
             )
@@ -244,7 +251,7 @@ class DeliveryDayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pages = Path(tmp)
             (pages / f"{PREPARING}.txt").write_text(_page(PREPARING), encoding="utf-8")
-            later = "1Z999AA10123456784"
+            later = "1Z999AA10000000001"
             today = _line(shipment_id="today", tracking=PREPARING, status="pending")
             in_transit = _line(shipment_id="later", tracking=later, status=SHIPPED, estimated_delivery="2026-10-16")
             chosen = {item.shipment_id for item in delivery_day_shipments([today, in_transit], CAPTURED, pages)}
@@ -285,7 +292,7 @@ class DeliveryDayTests(unittest.TestCase):
                 "10/12/2026",
                 "3:15 P.M.",
                 "Departed from facility",
-                "Wyoming, MI",
+                "Faketown, ZZ",
             ]
         )
         self.assertIsNone(parse_estimated_delivery(scan_only, CAPTURED))
@@ -296,13 +303,25 @@ class DeliveryDayTests(unittest.TestCase):
                 "10/13/2026",
                 "7:52 A.M.",
                 "Processing at UPS Facility",
-                "Wyoming, MI",
+                "Faketown, ZZ",
             ]
         )
         self.assertEqual(parse_estimated_delivery(promised, CAPTURED), "2026-10-14")
 
+    def test_numeric_etas_parse(self):
+        self.assertEqual(parse_estimated_delivery("Estimated delivery\n10/14/2026\n", CAPTURED), "2026-10-14")
+        self.assertEqual(parse_estimated_delivery("Estimated delivery date: 10/14/2026\n", CAPTURED), "2026-10-14")
+        self.assertEqual(
+            parse_estimated_delivery("Scheduled delivery\n10/14/2026\nby 8:00 PM\n", CAPTURED),
+            "2026-10-14",
+        )
+        self.assertEqual(parse_estimated_delivery("Estimated delivery\nThursday, 10/14/2026\n", CAPTURED), "2026-10-14")
+
     def test_a_date_only_scan_line_is_not_the_eta(self):
-        self.assertIsNone(parse_estimated_delivery("Estimated delivery\n10/13/2026\n", CAPTURED))
+        self.assertEqual(
+            parse_estimated_delivery("Estimated delivery\nToday\nby 9:00 PM\n10/12/2026\n", CAPTURED),
+            "2026-10-13",
+        )
         self.assertIsNone(
             parse_estimated_delivery(
                 "Estimated delivery\n10/13/2026\nProcessing at UPS Facility\n",
@@ -337,11 +356,11 @@ class DeliveryDayTests(unittest.TestCase):
             os.utime(path, (fresh, fresh))
             self.assertEqual(
                 [item.shipment_id for item in delivery_day_shipments([shipment], CAPTURED, pages)],
-                ["pyramids-1"],
+                ["sample-1"],
             )
         late = _line(
             shipment_id="late",
-            tracking="1Z999AA10123456784",
+            tracking="1Z999AA10000000003",
             status=SHIPPED,
             estimated_delivery="2026-10-10",
         )
@@ -368,11 +387,11 @@ def _page(number: str) -> str:
 
 def _line(**overrides) -> Shipment:
     payload = dict(
-        shipment_id="pyramids-1",
-        order_id="99-pyramids",
+        shipment_id="sample-1",
+        order_id="99-sample",
         customer_name="Riley Chen",
         customer_email="riley@example.com",
-        company="Pyramids",
+        company="Example Studio",
         line="6165550101",
         device="iPhone 17",
         carrier="ups",

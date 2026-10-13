@@ -70,9 +70,8 @@ def email_handoff(
     """Fields the sender used to take as flags, plus the rendered body.
 
     ``send-shipment-updates.py`` accepts no command-line arguments. The
-    tracking and order-status links are here, in the state file, because
-    ``--tracking-url``, ``--tracking-link``, ``--order-status-url``, and
-    ``--order-status-link`` on argv are ignored.
+    tracking link and the order-status URL live in this 0600 state file.
+    The order URL is not placed on argv, so it does not show up in ``ps``.
     """
     tracking_url, tracking_html, order_url, order_html = email_links(shipment)
     payload = {
@@ -100,6 +99,7 @@ def email_handoff(
     siblings = order_lines if order_lines else [shipment]
     payload["order_lines"] = [order_line_payload(item) for item in siblings]
     payload["order_closed"] = bool(shipment.order_closed or any(item.order_closed for item in siblings))
+    payload["dominic_notified"] = any(item.dominic_notified for item in siblings)
     return payload
 
 
@@ -144,10 +144,8 @@ def build_argv(
         "--event-time",
         event_time,
     ]
-    tracking_url, tracking_html, order_url, order_html = email_links(shipment)
+    tracking_url, tracking_html, _order_url, _order_html = email_links(shipment)
     argv.extend(["--tracking-url", tracking_url, "--tracking-link", tracking_html])
-    if order_url and order_html:
-        argv.extend(["--order-status-url", order_url, "--order-status-link", order_html])
     return argv
 
 
@@ -196,6 +194,9 @@ class EmailTrigger:
                 os.environ.pop(EMAIL_STATE_ENV, None)
             else:
                 os.environ[EMAIL_STATE_ENV] = previous
+        if code == 5:
+            # Missing contact was recorded once. Keep the handoff and do not mark sent.
+            return TriggerResult(False, "dominic_notified", tuple(argv))
         if code == 4:
             # The order is not fully delivered yet. Keep the handoff for the retry.
             return TriggerResult(False, "waiting_for_order", tuple(argv))

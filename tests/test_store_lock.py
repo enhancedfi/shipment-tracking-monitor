@@ -48,7 +48,7 @@ class PrivateFileTests(unittest.TestCase):
                     store = Store(store_path)
                     store.shipments = [_shipment()]
                     store.save()
-                    write_email_state(state_path, {"customer_email": "riley@example.com", "order_id": "99-pyramids"})
+                    write_email_state(state_path, {"customer_email": "riley@example.com", "order_id": "99-sample"})
                     with exclusive_store_lock(store_path, timeout=1):
                         pass
                 self.assertEqual(_mode(store_path), 0o600)
@@ -108,7 +108,7 @@ class EmailStateLifetimeTests(unittest.TestCase):
                 self.assertEqual(_mode(state), 0o600)
                 kept = json.loads(state.read_text(encoding="utf-8"))
                 self.assertEqual(kept["customer_email"], "riley@example.com")
-                self.assertEqual(kept["order_id"], "99-pyramids")
+                self.assertEqual(kept["order_id"], "99-sample")
                 self.assertIn("body", kept)
 
                 def succeed(_argv):
@@ -236,15 +236,15 @@ def _mode(path: Path) -> int:
 
 def _shipment() -> Shipment:
     return Shipment(
-        shipment_id="pyramids-1",
-        order_id="99-pyramids",
+        shipment_id="sample-1",
+        order_id="99-sample",
         customer_name="Riley Chen",
         customer_email="riley@example.com",
-        company="Pyramids",
+        company="Example Studio",
         line="6165550101",
         device="iPhone 17",
         carrier="ups",
-        tracking_number="1ZH4K6592930123854",
+        tracking_number="1Z999AA10123456784",
     )
 
 
