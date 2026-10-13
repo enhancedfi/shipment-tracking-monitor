@@ -161,11 +161,16 @@ class SenderRuleTests(unittest.TestCase):
         os.environ.pop("SHIPMENT_ALLOW_EMAIL", None)
         _write_state(self.state, _staged(tracking_url=TRACKING_URL, order_status_url=ORDER_URL))
         with self.assertLogsStdout() as stdout:
-            self.assertEqual(SENDER.main(), 0)
+            self.assertEqual(SENDER.main(), 6)
         text = stdout.value()
         self.assertIn("DRY-RUN", text)
         self.assertIn("Your Phone A is on its way!", text)
         self.assertNotIn("ada@example.com", text)
+        self.assertNotIn("99999", text)
+        self.assertNotIn("email=", text)
+        self.assertNotIn("zip=", text)
+        self.assertIn("acctmgmt/order/details", text)
+        self.assertNotIn("?", text.split("acctmgmt/order/details", 1)[1][:80])
         self.assertEqual(_posts(self.log), [])
         self.assertEqual(_requests(self.log), [])
         ledger_path = self.root / "comms" / "notified-shipments.json"
@@ -174,6 +179,56 @@ class SenderRuleTests(unittest.TestCase):
         os.environ["SHIPMENT_ALLOW_EMAIL"] = "1"
         self.assertEqual(SENDER.main(), 0)
         self.assertEqual(len(_posts(self.log)), 1)
+
+    def test_execute_without_allow_email_keeps_the_order_open(self):
+        os.environ.pop("SHIPMENT_ALLOW_EMAIL", None)
+        shipment = _shipment()
+        shipment.status = "pending"
+        argv_seen = []
+
+        def runner(argv):
+            argv_seen.append(" ".join(argv))
+            os.environ.pop("SHIPMENT_ALLOW_EMAIL", None)
+            return SENDER.main()
+
+        trigger = EmailTrigger(SENDER_PATH, mode="execute", runner=runner, state_path=self.state)
+        store = Store(self.root / "shipments.json")
+        store.shipments = [shipment]
+        snapshot = TrackingSnapshot(
+            "ups",
+            shipment.tracking_number,
+            "delivered",
+            description="Delivered",
+            event_time="2026-10-13T18:00:00+00:00",
+        )
+        client = FixtureClient("ups", {shipment.tracking_number: snapshot})
+        now = datetime(2026, 10, 13, 18, tzinfo=timezone.utc)
+        with self.assertLogsStdout() as stdout:
+            results = run_check(store, {"ups": client}, FakeClock(now), trigger, persist=True, force=True)
+        self.assertEqual(results[0].reason, "dry_run")
+        self.assertEqual(results[0].action, "retry")
+        self.assertFalse(shipment.order_closed)
+        self.assertEqual(store.email_log, [])
+        self.assertTrue(self.state.is_file())
+        self.assertEqual(stat.S_IMODE(self.state.stat().st_mode), 0o600)
+        saved = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertIn("buyer%40example.com", saved["order_status_url"])
+        self.assertIn("99999", saved["order_status_url"])
+        text = stdout.value()
+        self.assertIn("DRY-RUN", text)
+        self.assertNotIn("buyer@example.com", text)
+        self.assertNotIn("ada@example.com", text)
+        self.assertNotIn("99999", text)
+        self.assertNotIn("email=", text)
+        self.assertNotIn("zip=", text)
+        visible = argv_seen[0]
+        self.assertNotIn("--customer-email", visible)
+        self.assertNotIn("--customer-name", visible)
+        self.assertNotIn("--company", visible)
+        self.assertNotIn("ada@example.com", visible)
+        self.assertNotIn("Ada Lovelace", visible)
+        self.assertNotIn("Example Studio", visible)
+        self.assertNotIn("6165550101", visible)
 
     def test_watch_batch_is_a_dry_run_unless_email_is_allowed(self):
         os.environ.pop("SHIPMENT_ALLOW_EMAIL", None)
@@ -184,7 +239,7 @@ class SenderRuleTests(unittest.TestCase):
         self.contacts.unlink()
         _write_private(self.contacts, _book(skip=[ORDER_ID]))
         with self.assertLogsStdout() as stdout:
-            self.assertEqual(SENDER.main(), 0)
+            self.assertEqual(SENDER.main(), 6)
         self.assertIn("DRY-RUN", stdout)
         self.assertNotIn("ada@example.com", stdout.value())
         self.assertEqual(_requests(self.log), [])

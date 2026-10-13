@@ -1,11 +1,13 @@
 """The automatic cycle clock, and the cron entry point that follows it."""
 
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -122,6 +124,15 @@ class TrackingCycleTests(unittest.TestCase):
             sent = log.read_text(encoding="utf-8")
             self.assertIn("\nshipped\n", sent)
             self.assertNotIn("\ndelivered\n", sent)
+            blob = completed.stdout + completed.stderr + sent
+            self.assertNotIn("a@example.com", blob)
+            self.assertNotIn("Riley Chen", blob)
+            self.assertNotIn("Example Dental", blob)
+            self.assertNotIn("6165550101", blob)
+            self.assertNotIn("--customer-email", blob)
+            self.assertNotIn("--customer-name", blob)
+            self.assertNotIn("--company", blob)
+            self.assertNotIn("--line", blob)
             saved = json.loads(store.read_text(encoding="utf-8"))
             self.assertEqual(saved["shipments"][0]["status"], "shipped")
             self.assertTrue(any(entry["event"] == "shipped" for entry in saved["email_log"]))
@@ -171,6 +182,35 @@ class TrackingCycleTests(unittest.TestCase):
             self.assertEqual(len(shipped), 1)
             self.assertTrue(any(entry["shipment_id"] == "old" for entry in saved["email_log"]))
             self.assertTrue((root / "shipments.json.lock").is_file())
+
+    def test_cycle_lock_timeout_exits_nonzero_and_prints_alert(self):
+        import run_tracking_cycle
+        from shipment_monitor.store import StoreLockTimeout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pages = root / "pages"
+            pages.mkdir()
+            stderr = io.StringIO()
+            with (
+                patch(
+                    "run_tracking_cycle.exclusive_store_lock",
+                    side_effect=StoreLockTimeout("skipping run; lock still held: test"),
+                ),
+                patch("sys.stderr", stderr),
+            ):
+                code = run_tracking_cycle.main(
+                    [
+                        "--store",
+                        str(root / "shipments.json"),
+                        "--input",
+                        str(root / "missing.json"),
+                        "--pages",
+                        str(pages),
+                    ]
+                )
+            self.assertEqual(code, 1)
+            self.assertIn("ALERT", stderr.getvalue())
 
 
 def _spawn_cycle(

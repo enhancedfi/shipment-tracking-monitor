@@ -86,7 +86,7 @@ def exclusive_store_lock(store_path: Path, timeout: float = LOCK_TIMEOUT_SECONDS
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
-                    message = f"skipping run; lock still held: {path} after {timeout:.0f}s"
+                    message = f"ALERT: skipping run; lock still held: {path} after {timeout:.0f}s"
                     print(message, file=sys.stderr)
                     raise StoreLockTimeout(message)
                 time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))

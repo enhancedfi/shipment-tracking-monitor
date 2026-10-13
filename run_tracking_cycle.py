@@ -41,44 +41,66 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     store_path = Path(args.store)
-    # One lock covers import and send. The commands run in this process, so
-    # the lock they take re-enters instead of deadlocking a child.
+    # Import and send each hold the store lock. Page fetch stays outside it so
+    # a slow download does not block the other cycle. The commands run in this
+    # process, so the lock they take re-enters instead of deadlocking.
     try:
         with exclusive_store_lock(store_path):
-            return _run_locked(args, store_path)
-    except StoreLockTimeout:
-        return 0
+            imported = _import(args, store_path)
+    except StoreLockTimeout as exc:
+        return _lock_timeout(exc)
+    if imported != 0:
+        return imported
+    fetched = _fetch_pages(args, store_path)
+    if fetched != 0:
+        return fetched
+    try:
+        with exclusive_store_lock(store_path):
+            return _send(args, store_path)
+    except StoreLockTimeout as exc:
+        return _lock_timeout(exc)
 
 
-def _run_locked(args, store_path: Path) -> int:
+def _lock_timeout(exc: StoreLockTimeout) -> int:
+    message = str(exc)
+    if "ALERT" not in message:
+        print(f"ALERT: {message}", file=sys.stderr)
+    return 1
+
+
+def _import(args, store_path: Path) -> int:
     incoming = Path(args.input)
+    if not incoming.is_file():
+        return 0
+    return _python(
+        "import-shipments",
+        "--store",
+        str(store_path),
+        "--input",
+        str(incoming),
+    )
+
+
+def _fetch_pages(args, store_path: Path) -> int:
     pages = Path(args.pages)
     pages.mkdir(parents=True, exist_ok=True)
-
-    if incoming.is_file():
-        imported = _python(
-            "import-shipments",
-            "--store",
-            str(store_path),
-            "--input",
-            str(incoming),
-        )
-        if imported != 0:
-            return imported
-
     only_numbers = None
     if args.delivery_day:
         only_numbers = _delivery_day_numbers(store_path, pages)
     url_text = _url_text(store_path, only_numbers)
     sys.stdout.write(url_text)
-
     fetch = os.environ.get("SHIPMENT_PAGE_FETCH", "").strip()
-    if fetch:
-        fetched = subprocess.run(shlex.split(fetch), input=url_text, text=True, check=False)
-        if fetched.returncode != 0:
-            print(f"page fetch exited {fetched.returncode}", file=sys.stderr)
-            return fetched.returncode
+    if not fetch:
+        return 0
+    fetched = subprocess.run(shlex.split(fetch), input=url_text, text=True, check=False)
+    if fetched.returncode != 0:
+        print(f"page fetch exited {fetched.returncode}", file=sys.stderr)
+        return fetched.returncode
+    return 0
 
+
+def _send(args, store_path: Path) -> int:
+    pages = Path(args.pages)
     command = [
         "run",
         "--store",

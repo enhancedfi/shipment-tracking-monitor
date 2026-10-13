@@ -125,14 +125,6 @@ def build_argv(
         shipment.shipment_id,
         "--order-id",
         shipment.order_id,
-        "--customer-name",
-        shipment.customer_name,
-        "--customer-email",
-        shipment.customer_email,
-        "--company",
-        shipment.company,
-        "--line",
-        shipment.line,
         "--device",
         shipment.device,
         "--carrier",
@@ -194,6 +186,9 @@ class EmailTrigger:
                 os.environ.pop(EMAIL_STATE_ENV, None)
             else:
                 os.environ[EMAIL_STATE_ENV] = previous
+        if code == 6:
+            # Sender dry run. Keep the handoff and do not record a send.
+            return TriggerResult(False, "dry_run", tuple(argv))
         if code == 5:
             # Missing contact was recorded once. Keep the handoff and do not mark sent.
             return TriggerResult(False, "dominic_notified", tuple(argv))

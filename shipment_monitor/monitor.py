@@ -142,6 +142,13 @@ def run_check(
                 shipment.pending_event_at = isoformat(now)
             results.append(CheckResult(shipment.shipment_id, "defer", candidate.event, "waiting_for_order", trigger.argv))
             continue
+        if email.mode == "execute" and trigger.reason == "dry_run":
+            # The sender refused a live post. Leave the order open and unsent.
+            shipment.pending_event = candidate.event
+            if not shipment.pending_event_at:
+                shipment.pending_event_at = isoformat(now)
+            results.append(CheckResult(shipment.shipment_id, "retry", candidate.event, "dry_run", trigger.argv))
+            continue
         if email.mode == "execute" and trigger.ok and trigger.reason == "sent":
             _mark_sent(store, shipment, candidate.event, now)
             last_sent[shipment.customer_email] = now
@@ -214,6 +221,11 @@ def apply_webhook(
             shipment.pending_event = candidate.event
             shipment.pending_event_at = shipment.pending_event_at or isoformat(now)
             results.append(CheckResult(shipment.shipment_id, "defer", candidate.event, "waiting_for_order", trigger.argv))
+            continue
+        if email.mode == "execute" and trigger.reason == "dry_run":
+            shipment.pending_event = candidate.event
+            shipment.pending_event_at = shipment.pending_event_at or isoformat(now)
+            results.append(CheckResult(shipment.shipment_id, "retry", candidate.event, "dry_run", trigger.argv))
             continue
         if email.mode == "execute" and trigger.ok and trigger.reason == "sent":
             _mark_sent(store, shipment, candidate.event, now)

@@ -47,7 +47,7 @@ python track_shipments.py run \
 
 The cron entry point is `run_tracking_cycle.py`. It imports `data/incoming-shipments.json` when that file exists, prints the public URLs, runs `SHIPMENT_PAGE_FETCH` when that command is set (URLs on stdin, page text into `data/page-text/<tracking_number>.txt`), then polls with `--force` and `--execute`. `--force` is only on this scheduled command, so the 2-hour cadence is not skipped by the 3-hour cooldown used for a manual check. Customer email is still at most one per 6 hours per customer. `shipped` and `delivered` still go out immediately.
 
-Each `import-shipments` and `run` command holds an exclusive flock on `data/shipments.json.lock` for the throttle check and the store write. The lock file is created at mode 0600 and opened with `O_NOFOLLOW`. A second run waits up to 20 minutes. If the lock is still held, that run skips and logs the skip. `run_tracking_cycle.py` holds that same lock across the import and the send. Those commands run in-process, so the inner lock re-enters instead of waiting on itself.
+Each `import-shipments` and `run` command holds an exclusive flock on `data/shipments.json.lock` for the throttle check and the store write. The lock file is created at mode 0600 and opened with `O_NOFOLLOW`. A second run waits up to 20 minutes. If the lock is still held, the run prints an `ALERT` line and exits nonzero. `run_tracking_cycle.py` holds the lock for the import and again for the send. Page fetch runs between those two steps, outside the lock. The commands run in-process, so the inner lock re-enters instead of waiting on itself.
 
 A tracking number imported in the same pass as the poll has no page file until the next fetch. The poll reports `missing_snapshot` and does not mark the line checked, so the next URL list includes it.
 
@@ -121,10 +121,6 @@ python send-shipment-updates.py \
   --event shipped|delayed|out_for_delivery|delivered \
   --shipment-id ... \
   --order-id ... \
-  --customer-name ... \
-  --customer-email ... \
-  --company ... \
-  --line ... \
   --device ... \
   --carrier fedex|ups|usps \
   --tracking-number ... \
@@ -134,9 +130,11 @@ python send-shipment-updates.py \
   --tracking-link <a href="...">Track shipment</a>
 ```
 
+Customer name, email, company, and phone line are not on argv. They are in the mode-0600 state file, so they are not visible in `ps`. The cycle does not print them.
+
 When the shipment has both a recorded lookup email and ZIP, the handoff includes `order_status_url` and `order_status_link`. The URL is `https://www.att.com/acctmgmt/order/details?email=...&zip=...`. If either lookup field is missing, those fields are omitted. The customer notification address is not used in their place. The order URL is not passed on argv, so it is not visible in `ps`.
 
-`send-shipment-updates.py` takes no command-line arguments. The monitor writes the payload, including `tracking_url`, `tracking_link`, `order_status_url`, `order_status_link`, the rendered HTML `body`, and the order's lines, to `data/shipments.json.email.json` beside the store. `SHIPMENT_EMAIL_STATE` is set to that path for the sender process. The file is created at mode 0600. It is deleted after the sender exits 0. When the sender exits non-zero, the file stays at mode 0600 so a retry can read the same handoff. The sender's body includes the carrier tracking link and the AT&T order-status link when the handoff has them. A missing link is left out. The sender posts to Resend only when `SHIPMENT_ALLOW_EMAIL=1`, including the older `SHIPMENT_WATCH_STATE` batch. Otherwise it prints a dry run and does not record the send.
+`send-shipment-updates.py` takes no command-line arguments. The monitor writes the payload, including `tracking_url`, `tracking_link`, `order_status_url`, `order_status_link`, the rendered HTML `body`, and the order's lines, to `data/shipments.json.email.json` beside the store. `SHIPMENT_EMAIL_STATE` is set to that path for the sender process. The file is created at mode 0600. It is deleted after the sender exits 0. When the sender exits non-zero, the file stays at mode 0600 so a retry can read the same handoff. The sender's body includes the carrier tracking link and the AT&T order-status link when the handoff has them. A missing link is left out. The sender posts to Resend only when `SHIPMENT_ALLOW_EMAIL=1`, including the older `SHIPMENT_WATCH_STATE` batch. Otherwise it prints a redacted dry run (no order-link query, email, or ZIP) and exits 6. The monitor treats that as not sent: it does not record the email, does not close the order, and leaves the state file in place.
 
 Customer names, emails, and order ids are not in git. Copy `customer-comms/contacts.example.json` to a mode-0600 file and set `SHIPMENT_CONTACTS` to that path. `customer-comms/contacts.json` is gitignored. Resend is imported with `from resend import _request` from the directory in `SHIPMENT_RESEND_BIN` (default `/home/hatch/workspace/skills/resend/bin`). Ledger files go under `SHIPMENT_COMMS_DIR`, or `data/customer-comms` when that is unset. A missing contacts entry prints `DOMINIC-NOTIFY` once for that order and does not send. The notice is recorded on the shipment (`dominic_notified`) and in the sender ledger, so the next run stays quiet. Customer emails are masked in that output. Shipped mail is one email per order per batch. When every line on the order is delivered, the sender sends one consolidated email and the order is closed. Shipped and that final delivery go out immediately. Every other email waits 6 hours. A delivered line does not get a shipped email. A closed order stays silent.
 

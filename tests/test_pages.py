@@ -143,7 +143,7 @@ class PageTextTests(unittest.TestCase):
                 "Tracking History",
                 "October 13, 2026, 7:52 am",
                 "Arrived at USPS Regional Facility",
-                "WYOMING MI 49519",
+                "Faketown, ZZ 99999",
             ]
         )
         pickup = "\n".join(
@@ -153,7 +153,7 @@ class PageTextTests(unittest.TestCase):
                 "Tracking History",
                 "October 13, 2026, 9:05 am",
                 "Available for Pickup",
-                "WYOMING MI 49519",
+                "Faketown, ZZ 99999",
             ]
         )
         alert = "\n".join(
@@ -163,7 +163,7 @@ class PageTextTests(unittest.TestCase):
                 "Tracking History",
                 "October 13, 2026, 1:15 pm",
                 "Delivery Attempt",
-                "WYOMING MI 49519",
+                "Faketown, ZZ 99999",
             ]
         )
         label = "\n".join(["Status", "Pre-Shipment", "Tracking History"])
@@ -175,6 +175,10 @@ class PageTextTests(unittest.TestCase):
         self.assertEqual(parse_tracking_page("usps", pickup, "9400111899223344556678").status, OUT_FOR_DELIVERY)
         self.assertEqual(parse_tracking_page("usps", alert, "9400111899223344556679").status, "delayed")
         self.assertEqual(parse_tracking_page("usps", label, "9400111899223344556680").status, PENDING)
+        for page in (in_transit, pickup, alert):
+            self.assertIn("Faketown, ZZ 99999", page)
+            self.assertNotIn("WYOMING", page)
+            self.assertNotIn("49519", page)
 
     def test_missing_page_file_is_not_a_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:

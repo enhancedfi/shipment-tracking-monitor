@@ -89,8 +89,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with exclusive_store_lock(Path(args.store)):
             return _main_locked(args)
-    except StoreLockTimeout:
-        return 0
+    except StoreLockTimeout as exc:
+        message = str(exc)
+        if "ALERT" not in message:
+            print(f"ALERT: {message}", file=sys.stderr)
+        return 1
 
 
 def _main_locked(args) -> int:
@@ -291,9 +294,31 @@ def _load_shipments(path: Path) -> list[Shipment]:
     return load_shipments_document(raw)
 
 
+_CUSTOMER_ARGV = {"--customer-name", "--customer-email", "--company", "--line"}
+
+
+def _mask_printed_argv(argv: list) -> list:
+    """Mask leftover customer flags in printed results."""
+    masked = []
+    hide_value = False
+    for item in argv:
+        if hide_value:
+            masked.append("***")
+            hide_value = False
+            continue
+        if item in _CUSTOMER_ARGV:
+            masked.append(item)
+            hide_value = True
+            continue
+        masked.append(item)
+    return masked
+
+
 def _print_results(results) -> None:
     if not results:
         print("no shipment actions")
         return
     for result in results:
-        print(json.dumps(result.to_dict(), sort_keys=True))
+        payload = result.to_dict()
+        payload["argv"] = _mask_printed_argv(list(payload.get("argv") or []))
+        print(json.dumps(payload, sort_keys=True))

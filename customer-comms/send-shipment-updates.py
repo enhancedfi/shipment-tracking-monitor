@@ -60,7 +60,7 @@ _MONTHS = {name: index for index, name in enumerate(
 _EXIT = {
     "sent": 0,
     "skipped": 0,
-    "dry_run": 0,
+    "dry_run": 6,
     "waiting": 4,
     "throttled": 3,
     "failed": 1,
@@ -334,6 +334,19 @@ def domain_verified():
     return False
 
 
+def redact_dry_run_text(text):
+    """Drop order-link query values, customer emails, and ZIPs from a dry-run print."""
+    redacted = re.sub(r"(https?://[^\s?#]+)\?[^\s]*", r"\1", text)
+    redacted = re.sub(
+        r"[A-Za-z0-9._%+-]+(?:%40|@)[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+        lambda match: mask_email(match.group(0).replace("%40", "@")),
+        redacted,
+    )
+    redacted = re.sub(r"([?&](?:email|zip)=)[^\s&]+", r"\1***", redacted, flags=re.IGNORECASE)
+    redacted = re.sub(r"\b\d{5}(?:-\d{4})?\b", "*****", redacted)
+    return redacted
+
+
 def send_email(to, subject, text, html_extra=""):
     full_text = text.rstrip("\n") + "\n" + SIGNATURE
     full_html = text_to_html(text.rstrip("\n")) + html_extra + SIGNATURE_HTML
@@ -341,7 +354,7 @@ def send_email(to, subject, text, html_extra=""):
         print("DRY-RUN: customer email was not sent. Set SHIPMENT_ALLOW_EMAIL=1 to send.")
         print(f"To: {mask_email(to)}")
         print(f"Subject: {subject}")
-        print(full_text)
+        print(redact_dry_run_text(full_text))
         return "dry-run", full_text, full_html
     payload = {
         "from": FROM,
@@ -991,6 +1004,7 @@ def send_watch(path):
     now = datetime.now(timezone.utc).isoformat()
     today = datetime.now().date()
     sent = 0
+    dry_runs = 0
     try:
         for order in state.get("orders", []):
             order_id = order.get("order_id", "")
@@ -1013,9 +1027,13 @@ def send_watch(path):
             )
             if result == "sent":
                 sent += 1
+            elif result == "dry_run":
+                dry_runs += 1
     finally:
         _save_ledgers(ledgers)
     print(f"Done: {sent} email(s) sent.")
+    if dry_runs and not sent:
+        return _EXIT["dry_run"]
     return 0
 
 

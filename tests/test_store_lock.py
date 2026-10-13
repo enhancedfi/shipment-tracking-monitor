@@ -188,6 +188,7 @@ class StoreLockTests(unittest.TestCase):
             self.assertEqual(child.returncode, 0, child.stderr)
             self.assertIn("timed_out", child.stdout)
             self.assertNotIn("acquired", child.stdout)
+            self.assertIn("ALERT", child.stderr)
             self.assertIn("skipping run; lock still held:", child.stderr)
             self.assertEqual(marker.read_text(encoding="utf-8"), "held")
 
@@ -204,7 +205,8 @@ class StoreLockTests(unittest.TestCase):
             stderr = io.StringIO()
             with patch("shipment_monitor.cli.exclusive_store_lock", locked_out), patch("sys.stderr", stderr):
                 code = cli_main(["import-shipments", "--store", str(store), "--input", str(incoming)])
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 1)
+            self.assertIn("ALERT", stderr.getvalue())
             self.assertFalse(store.exists())
 
     def test_in_process_reentry_does_not_deadlock(self):
