@@ -1,6 +1,7 @@
 """Order-status links, ETA-today delivery day, and the Pyramids UPS page text."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -12,7 +13,8 @@ from zoneinfo import ZoneInfo
 from shipment_monitor.carriers import FixtureClient
 from shipment_monitor.clock import FakeClock
 from shipment_monitor.delivery_day import delivery_day_shipments
-from shipment_monitor.email_trigger import EmailTrigger, build_argv
+from shipment_monitor.email_body import render_email_body
+from shipment_monitor.email_trigger import EmailTrigger, build_argv, email_handoff
 from shipment_monitor.links import email_links, order_status_url
 from shipment_monitor.models import OUT_FOR_DELIVERY, SHIPPED, Shipment
 from shipment_monitor.monitor import run_check
@@ -136,6 +138,55 @@ class OrderLinkTests(unittest.TestCase):
             self.assertIn("zip=49503", order_html)
             self.assertIn(f'<a href="https://www.ups.com/track?tracknum={PREPARING}">', tracking_html)
 
+    def test_rendered_email_body_contains_the_order_and_tracking_links(self):
+        shipment = _line(lookup_email="buyer@pyramids.example", lookup_zip="49503", status="pending")
+        _tracking, tracking_html, order_url, order_html = email_links(shipment)
+        body = render_email_body(shipment, "shipped", "Preparing for Delivery")
+        self.assertIn(tracking_html, body)
+        self.assertIn(order_html, body)
+        self.assertIn(f"https://www.ups.com/track?tracknum={PREPARING}", body)
+        self.assertIn("https://www.att.com/acctmgmt/order/details?", body)
+        self.assertIn("zip=49503", body)
+        self.assertEqual(order_url, "https://www.att.com/acctmgmt/order/details?email=buyer%40pyramids.example&zip=49503")
+        handoff = email_handoff(shipment, "shipped", "Preparing for Delivery", "2026-10-13T07:52:00")
+        self.assertEqual(handoff["body"], body)
+        self.assertEqual(
+            handoff["order_status_url"],
+            "https://www.att.com/acctmgmt/order/details?email=buyer%40pyramids.example&zip=49503",
+        )
+        self.assertEqual(handoff["tracking_url"], f"https://www.ups.com/track?tracknum={PREPARING}")
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "send-shipment-updates.py"
+            body_path = Path(tmp) / "body.html"
+            script.write_text(
+                "import json, os\n"
+                "from pathlib import Path\n"
+                "state = json.loads(Path(os.environ['SHIPMENT_EMAIL_STATE']).read_text(encoding='utf-8'))\n"
+                f"Path({str(body_path)!r}).write_text(state['body'], encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            state_path = Path(tmp) / "shipments.json.email.json"
+            email = EmailTrigger(script, mode="execute", state_path=state_path)
+            store = Store(Path(tmp) / "shipments.json")
+            store.shipments = [shipment]
+            carriers = {
+                "ups": FixtureClient(
+                    "ups",
+                    {PREPARING: parse_tracking_page("ups", _page(PREPARING), PREPARING, now=CAPTURED)},
+                )
+            }
+            results = run_check(store, carriers, FakeClock(CAPTURED), email, persist=False)
+            self.assertEqual(results[0].action, "send", results[0].reason)
+            rendered = body_path.read_text(encoding="utf-8")
+            self.assertIn(tracking_html, rendered)
+            self.assertIn(order_html, rendered)
+            self.assertIn("acctmgmt/order/details", rendered)
+            self.assertIn("zip=49503", rendered)
+            self.assertIn(f"track?tracknum={PREPARING}", rendered)
+            saved = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["body"], rendered)
+            self.assertNotIn("--tracking-url", saved["body"])
+
 
 class DeliveryDayTests(unittest.TestCase):
     def test_pyramids_ups_pages_estimate_today(self):
@@ -203,6 +254,76 @@ class DeliveryDayTests(unittest.TestCase):
             self.assertEqual(client.calls, [[PREPARING]])
             self.assertEqual(today.estimated_delivery, "2026-10-13")
             self.assertEqual(in_transit.estimated_delivery, "2026-10-16")
+
+    def test_yearless_weekday_and_month_day_etas_infer_the_year(self):
+        self.assertEqual(
+            parse_estimated_delivery("Estimated delivery\nWednesday, October 14\nby 9:00 PM\n", CAPTURED),
+            "2026-10-14",
+        )
+        self.assertEqual(parse_estimated_delivery("Expected delivery date\nOct 14\n", CAPTURED), "2026-10-14")
+        self.assertEqual(parse_estimated_delivery("Estimated delivery\nOctober 12\n", CAPTURED), "2026-10-12")
+        self.assertEqual(parse_estimated_delivery("Estimated delivery\nJanuary 5\n", CAPTURED), "2027-01-05")
+
+    def test_a_scan_date_is_not_read_as_the_eta(self):
+        scan_only = "\n".join(
+            [
+                "On the way",
+                "Estimated delivery",
+                "10/12/2026",
+                "3:15 P.M.",
+                "Departed from facility",
+                "Wyoming, MI",
+            ]
+        )
+        self.assertIsNone(parse_estimated_delivery(scan_only, CAPTURED))
+        promised = "\n".join(
+            [
+                "Estimated delivery",
+                "Wednesday, October 14",
+                "10/13/2026",
+                "7:52 A.M.",
+                "Processing at UPS Facility",
+                "Wyoming, MI",
+            ]
+        )
+        self.assertEqual(parse_estimated_delivery(promised, CAPTURED), "2026-10-14")
+
+    def test_stale_saved_today_page_is_ignored_and_a_late_package_stays(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pages = Path(tmp)
+            path = pages / f"{PREPARING}.txt"
+            path.write_text(_page(PREPARING), encoding="utf-8")
+            stale = datetime(2026, 10, 12, 15, 0, tzinfo=EASTERN).timestamp()
+            os.utime(path, (stale, stale))
+            shipment = _line(status=SHIPPED)
+            self.assertEqual(delivery_day_shipments([shipment], CAPTURED, pages), [])
+            fresh = datetime(2026, 10, 13, 15, 0, tzinfo=EASTERN).timestamp()
+            os.utime(path, (fresh, fresh))
+            self.assertEqual(
+                [item.shipment_id for item in delivery_day_shipments([shipment], CAPTURED, pages)],
+                ["pyramids-1"],
+            )
+        late = _line(
+            shipment_id="late",
+            tracking="1Z999AA10123456784",
+            status=SHIPPED,
+            estimated_delivery="2026-10-10",
+        )
+        future = _line(
+            shipment_id="future",
+            tracking="1Z999AA10123456785",
+            status=SHIPPED,
+            estimated_delivery="2026-10-16",
+        )
+        delivered = _line(
+            shipment_id="done",
+            tracking="1Z999AA10123456786",
+            status="delivered",
+            ever_delivered=True,
+            estimated_delivery="2026-10-10",
+        )
+        chosen = {item.shipment_id for item in delivery_day_shipments([late, future, delivered], CAPTURED, None)}
+        self.assertEqual(chosen, {"late"})
 
 
 def _page(number: str) -> str:

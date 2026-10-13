@@ -1,13 +1,14 @@
 """Shipments that should be polled on the 30-minute delivery-day cadence.
 
 A line is delivery-day when its tracking page ETA is today in
-America/New_York, or when the carrier already says out_for_delivery.
-A standard in-transit line whose ETA is another day is not.
+America/New_York, when that ETA has already passed and the package is
+not delivered, or when the carrier already says out_for_delivery.
+A standard in-transit line whose ETA is a later day is not.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -33,7 +34,8 @@ def is_delivery_day(shipment: Shipment, now: datetime, eta: str | None = None) -
     resolved = eta or shipment.estimated_delivery
     if not resolved:
         return False
-    return resolved == eastern_day(now)
+    # Today, or a late package whose promised day has passed.
+    return resolved <= eastern_day(now)
 
 
 def delivery_day_shipments(
@@ -56,4 +58,5 @@ def _page_eta(shipment: Shipment, pages: Path | None, now: datetime) -> str | No
     if not path.is_file():
         return None
     text = path.read_text(encoding="utf-8", errors="replace")
-    return parse_estimated_delivery(text, now)
+    saved_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    return parse_estimated_delivery(text, now, saved_at=saved_at)

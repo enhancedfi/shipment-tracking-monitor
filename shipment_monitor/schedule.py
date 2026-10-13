@@ -24,9 +24,12 @@ ATT_ORDER_COMMAND = 'cd "$HOME/workspace/att-order-monitor" && python3 -m att_or
 TRACKING_CYCLE_HOURS = (7, 9, 11, 13, 15, 17, 19, 21)
 TRACKING_CYCLE_COMMAND = 'cd "$HOME/workspace/shipment-tracking-monitor" && python3 run_tracking_cycle.py'
 
-# Every 30 minutes from 09:00 through 21:00 Eastern, inclusive.
-# Half hours run through 20:30. 21:00 is its own minute so 21:30 is not included.
+# Every 30 minutes from 09:30 through 20:30 Eastern.
+# Minute 0 of a tracking-cycle hour is left to the 2-hour job so the two
+# commands do not start together on the same store.
 DELIVERY_DAY_COMMAND = f"{TRACKING_CYCLE_COMMAND} --delivery-day"
+# On-the-hour slots inside the delivery window that the 2-hour cycle does not use.
+DELIVERY_DAY_OFFSET_HOURS = (10, 12, 14, 16, 18, 20)
 
 
 def _hours(values: tuple[int, ...]) -> str:
@@ -44,19 +47,25 @@ def tracking_cycle_cron() -> str:
 
 
 def delivery_day_cron_lines() -> tuple[str, str]:
-    """30-minute delivery-day poll from 09:00 through 21:00 Eastern."""
+    """30-minute delivery-day poll, skipping minutes the 2-hour cycle uses.
+
+    Half hours from 09:30 through 20:30, plus 10:00, 12:00, 14:00, 16:00,
+    18:00, and 20:00. Not 09:00, 11:00, 13:00, 15:00, 17:00, 19:00, or 21:00.
+    """
     return (
-        f"0,30 9-20 * * * {DELIVERY_DAY_COMMAND}",
-        f"0 21 * * * {DELIVERY_DAY_COMMAND}",
+        f"30 9-20 * * * {DELIVERY_DAY_COMMAND}",
+        f"0 {_hours(DELIVERY_DAY_OFFSET_HOURS)} * * * {DELIVERY_DAY_COMMAND}",
     )
 
 
 def delivery_day_clock_times() -> tuple[str, ...]:
-    """09:00, 09:30, ... 21:00 Eastern."""
+    """Delivery-day clock times that do not collide with the 2-hour cycle."""
+    overlap = set(TRACKING_CYCLE_HOURS)
     times: list[str] = []
     hour, minute = 9, 0
     while (hour, minute) <= (21, 0):
-        times.append(f"{hour:02d}:{minute:02d}")
+        if not (minute == 0 and hour in overlap):
+            times.append(f"{hour:02d}:{minute:02d}")
         minute += 30
         if minute >= 60:
             hour += 1
@@ -75,7 +84,8 @@ def crontab_text() -> str:
             att_order_cron(),
             f"# Tracking page fetch + poll + send. Daily {', '.join(f'{hour:02d}:00' for hour in TRACKING_CYCLE_HOURS)} Eastern.",
             tracking_cycle_cron(),
-            "# Delivery-day poll only. Every 30 minutes from 09:00 through 21:00 Eastern.",
+            "# Delivery-day poll only. Every 30 minutes from 09:30 through 20:30 Eastern,",
+            "# skipping 09:00, 11:00, 13:00, 15:00, 17:00, 19:00, and 21:00 (the 2-hour cycle).",
             first,
             last,
             "",

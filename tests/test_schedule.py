@@ -63,15 +63,21 @@ class ScheduleTests(unittest.TestCase):
 
     def test_schedule_lists_the_30_minute_delivery_day_job(self):
         times = delivery_day_clock_times()
-        self.assertEqual(times[0], "09:00")
-        self.assertEqual(times[-1], "21:00")
-        self.assertEqual(times[1], "09:30")
+        self.assertEqual(times[0], "09:30")
+        self.assertEqual(times[-1], "20:30")
+        self.assertIn("10:00", times)
+        self.assertNotIn("09:00", times)
+        self.assertNotIn("21:00", times)
         self.assertNotIn("21:30", times)
-        self.assertEqual(len(times), 25)
+        cycle_minutes = {f"{hour:02d}:00" for hour in TRACKING_CYCLE_HOURS}
+        self.assertFalse(set(times) & cycle_minutes)
+        self.assertEqual(len(times), 18)
         first, last = delivery_day_cron_lines()
-        self.assertIn("0,30 9-20 * * *", first)
+        self.assertIn("30 9-20 * * *", first)
         self.assertIn("--delivery-day", first)
-        self.assertTrue(last.startswith("0 21 * * * "))
+        self.assertIn("0 10,12,14,16,18,20 * * *", last)
+        self.assertNotIn("0,30 9-20", first)
+        self.assertFalse(last.startswith("0 21 "))
         self.assertIn(first, crontab_text())
         self.assertIn(last, crontab_text())
 
@@ -118,6 +124,81 @@ class TrackingCycleTests(unittest.TestCase):
             self.assertEqual(saved["shipments"][0]["status"], "shipped")
             self.assertTrue(any(entry["event"] == "shipped" for entry in saved["email_log"]))
 
+    def test_two_simultaneous_runs_send_one_email_and_keep_updates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store, pages, sender, log = _layout(root)
+            store.write_text(
+                json.dumps(
+                    {
+                        "shipments": [_row(status="pending", last_checked_at=None, company="Old Co")],
+                        "email_log": [
+                            {
+                                "customer_email": "other@example.com",
+                                "shipment_id": "old",
+                                "event": "delivered",
+                                "sent_at": "2026-10-01T12:00:00+00:00",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            incoming = root / "incoming.json"
+            incoming.write_text(
+                json.dumps([_row(status="pending", last_checked_at=None, company="Kept Co")]),
+                encoding="utf-8",
+            )
+            env = _env(log, allow=True)
+            full = _spawn_cycle(store, pages, incoming, env, delivery_day=False)
+            delivery = _spawn_cycle(store, pages, incoming, env, delivery_day=True)
+            full_out, full_err = full.communicate(timeout=30)
+            delivery_out, delivery_err = delivery.communicate(timeout=30)
+            self.assertEqual(full.returncode, 0, full_err)
+            self.assertEqual(delivery.returncode, 0, delivery_err)
+            self.assertIn(PREPARING, full_out + delivery_out)
+            sent = log.read_text(encoding="utf-8")
+            self.assertEqual(sent.count("\n---\n"), 1, sent)
+            self.assertEqual(sent.count("\nshipped\n"), 1, sent)
+            saved = json.loads(store.read_text(encoding="utf-8"))
+            row = saved["shipments"][0]
+            self.assertEqual(row["status"], "shipped")
+            self.assertEqual(row["company"], "Kept Co")
+            self.assertIn("shipped", row["notified_events"])
+            shipped = [entry for entry in saved["email_log"] if entry["event"] == "shipped"]
+            self.assertEqual(len(shipped), 1)
+            self.assertTrue(any(entry["shipment_id"] == "old" for entry in saved["email_log"]))
+            self.assertTrue((root / "shipments.json.lock").is_file())
+
+
+def _spawn_cycle(
+    store: Path,
+    pages: Path,
+    incoming: Path,
+    env: dict[str, str],
+    delivery_day: bool,
+) -> subprocess.Popen[str]:
+    command = [
+        sys.executable,
+        str(ROOT / "run_tracking_cycle.py"),
+        "--store",
+        str(store),
+        "--input",
+        str(incoming),
+        "--pages",
+        str(pages),
+    ]
+    if delivery_day:
+        command.append("--delivery-day")
+    return subprocess.Popen(
+        command,
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
 
 def _cycle(store: Path, pages: Path, sender: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -147,7 +228,9 @@ def _layout(root: Path) -> tuple[Path, Path, Path, Path]:
     log = root / "sender.log"
     sender = root / "send-shipment-updates.py"
     sender.write_text(
-        "import os, sys\nfrom pathlib import Path\nPath(os.environ['STUB_LOG']).open('a').write('\\n'.join(sys.argv) + '\\n---\\n')\n",
+        "import os, sys, time\nfrom pathlib import Path\n"
+        "time.sleep(0.4)\n"
+        "Path(os.environ['STUB_LOG']).open('a').write('\\n'.join(sys.argv) + '\\n---\\n')\n",
         encoding="utf-8",
     )
     return store, pages, sender, log
@@ -165,6 +248,8 @@ def _env(log: Path, allow: bool) -> dict[str, str]:
             "SHIPMENT_PAGE_FETCH",
             "SHIPMENT_STORE",
             "SHIPMENT_INCOMING",
+            "SHIPMENT_STORE_LOCK_HELD",
+            "SHIPMENT_EMAIL_STATE",
         }
         and not key.endswith("_CLIENT_ID")
         and not key.endswith("_CLIENT_SECRET")
@@ -176,13 +261,13 @@ def _env(log: Path, allow: bool) -> dict[str, str]:
     return env
 
 
-def _row(status: str, last_checked_at: str) -> dict:
+def _row(status: str, last_checked_at: str | None, company: str = "North Pier Dental") -> dict:
     return {
         "shipment_id": "prep",
         "order_id": "99-1",
         "customer_name": "Riley Chen",
         "customer_email": "a@example.com",
-        "company": "North Pier Dental",
+        "company": company,
         "line": "6165550101",
         "device": "iPhone 17",
         "carrier": "ups",

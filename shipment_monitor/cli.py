@@ -18,7 +18,8 @@ from shipment_monitor.briefing import shipment_summary
 from shipment_monitor.carriers import FEDEX_PRODUCTION, UPS_PRODUCTION, USPS_PRODUCTION, FedExClient, UPSClient, USPSClient
 from shipment_monitor.clock import Clock, FakeClock, SystemClock
 from shipment_monitor.delivery_day import delivery_day_shipments
-from shipment_monitor.email_trigger import DEFAULT_SENDER, EmailTrigger
+from shipment_monitor.email_trigger import DEFAULT_SENDER, EmailTrigger, email_state_path
+from shipment_monitor.store import Store, exclusive_store_lock
 from shipment_monitor.fixtures import load_fixture_clients
 from shipment_monitor.orders import load_shipments_document
 from shipment_monitor.models import Shipment, parse_time
@@ -27,7 +28,6 @@ from shipment_monitor.monitor import apply_webhook
 from shipment_monitor.page_source import web_page_clients
 from shipment_monitor.parsing import snapshot_from_webhook
 from shipment_monitor.rate_limit import RequestBudget, SpacingLimiter
-from shipment_monitor.store import Store
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -77,6 +77,20 @@ def main(argv: list[str] | None = None) -> int:
     incoming.add_argument("--input", required=True)
 
     args = parser.parse_args(argv)
+    if _refuses_execute(args):
+        return 2
+    if args.command == "briefing":
+        store = Store(Path(args.store))
+        store.load()
+        clock = _clock(args.now)
+        slot = None if args.slot == "auto" else args.slot
+        sys.stdout.write(shipment_summary(store.shipments, clock.now(), slot))
+        return 0
+    with exclusive_store_lock(Path(args.store)):
+        return _main_locked(args)
+
+
+def _main_locked(args) -> int:
     store = Store(Path(args.store))
     store.load()
 
@@ -87,11 +101,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     clock = _clock(getattr(args, "now", None))
-    if args.command == "briefing":
-        slot = None if args.slot == "auto" else args.slot
-        sys.stdout.write(shipment_summary(store.shipments, clock.now(), slot))
-        return 0
-
     email = _email_trigger(args)
     if isinstance(email, int):
         return email
@@ -142,15 +151,25 @@ def _add_email_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _refuses_execute(args) -> bool:
+    if not getattr(args, "execute", False) or os.environ.get("SHIPMENT_ALLOW_EMAIL") == "1":
+        return False
+    print(
+        "Refusing to email customers. Leave --execute off. "
+        "SHIPMENT_ALLOW_EMAIL=1 is required before the existing sender can be invoked.",
+        file=sys.stderr,
+    )
+    return True
+
+
 def _email_trigger(args) -> EmailTrigger | int:
-    if args.execute and os.environ.get("SHIPMENT_ALLOW_EMAIL") != "1":
-        print(
-            "Refusing to email customers. Leave --execute off. "
-            "SHIPMENT_ALLOW_EMAIL=1 is required before the existing sender can be invoked.",
-            file=sys.stderr,
-        )
+    if _refuses_execute(args):
         return 2
-    return EmailTrigger(Path(args.sender), mode="execute" if args.execute else "dry-run")
+    return EmailTrigger(
+        Path(args.sender),
+        mode="execute" if args.execute else "dry-run",
+        state_path=email_state_path(Path(args.store)),
+    )
 
 
 def _clock(now: str | None) -> Clock:

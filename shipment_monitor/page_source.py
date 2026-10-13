@@ -8,6 +8,7 @@ TrackingSnapshot values the API clients return.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -70,7 +71,8 @@ class WebPageClient(CarrierClient):
             text = path.read_text(encoding="utf-8", errors="replace")
             if not text.strip():
                 continue
-            snapshots.append(parse_tracking_page(self.carrier, text, number, now=now))
+            saved_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            snapshots.append(parse_tracking_page(self.carrier, text, number, now=now, saved_at=saved_at))
         return snapshots
 
 

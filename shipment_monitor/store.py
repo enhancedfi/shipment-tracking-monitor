@@ -2,11 +2,51 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from shipment_monitor.models import EmailLogEntry, Shipment
+
+# Set on the process that holds the flock so a child it spawns does not
+# flock the same file and deadlock against its parent.
+LOCK_HELD_ENV = "SHIPMENT_STORE_LOCK_HELD"
+
+
+def lockfile_for(store_path: Path) -> Path:
+    """Exclusive lock sits beside the store, not on the file ``save`` replaces."""
+    return store_path.with_name(store_path.name + ".lock")
+
+
+@contextmanager
+def exclusive_store_lock(store_path: Path) -> Iterator[None]:
+    """Hold an exclusive flock for one whole run.
+
+    The second run waits until this one finishes. Load the store after
+    entering and save it before leaving: the 6-hour throttle check and the
+    store write then cannot interleave with another run. A child started
+    while the lock is held sees ``SHIPMENT_STORE_LOCK_HELD`` and does not
+    take the flock again.
+    """
+    if os.environ.get(LOCK_HELD_ENV) == "1":
+        yield
+        return
+    path = lockfile_for(store_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.environ[LOCK_HELD_ENV] = "1"
+        try:
+            yield
+        finally:
+            os.environ.pop(LOCK_HELD_ENV, None)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 class Store:

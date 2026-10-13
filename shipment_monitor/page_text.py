@@ -132,6 +132,25 @@ DATE_TIME = re.compile(
     re.IGNORECASE,
 )
 
+# Weekday and month-day ETAs that do not include a year: "Wednesday, October 14", "Oct 14".
+_ETA_NAMED = re.compile(
+    r"(?<![A-Za-z])"
+    r"(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+)?"
+    r"(?P<month>January|February|March|April|May|June|July|August|September|October|November|December|"
+    r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept|Sep|Oct|Nov|Dec)\.?\s+"
+    r"(?P<day>\d{1,2})(?:st|nd|rd|th)?"
+    r"(?:(?:,|\s)+(?P<year>\d{4}))?",
+    re.IGNORECASE,
+)
+# A clock glued to a date is a scan, not an estimated-delivery day.
+_CLOCK_AFTER = re.compile(
+    r"^[\s,]+(?:at\s+)?\d{1,2}:\d{2}\s*[AP]\.?\s*M",
+    re.IGNORECASE,
+)
+# A yearless date this many days before today stays in the past (a late ETA).
+# Older than that rolls to next year.
+YEARLESS_PAST_DAYS = 7
+
 _STATE_ZIP = re.compile(r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b")
 _STATE_COMMA = re.compile(r"\b[A-Z]{2}\b")
 
@@ -150,12 +169,20 @@ class _Scan:
     index: int
 
 
-def parse_estimated_delivery(text: str, now: datetime) -> str | None:
+def parse_estimated_delivery(
+    text: str,
+    now: datetime,
+    saved_at: datetime | None = None,
+) -> str | None:
     """Eastern calendar day promised by the tracking page, as YYYY-MM-DD.
 
     "Today" and "Tomorrow" use ``now`` in America/New_York. A scan date
-    under Shipment Progress is not the ETA. Returns None when the page
-    has no estimated-delivery line.
+    (a date with a clock time, including one under Shipment Progress) is
+    not the ETA. A saved page that says Today is ignored when ``saved_at``
+    falls on an earlier Eastern day. A month and day with no year, such as
+    "Wednesday, October 14" or "Oct 14", uses this year unless that day is
+    already more than a few days past, in which case it rolls to next year.
+    Returns None when the page has no estimated-delivery line.
     """
     if now.tzinfo is None:
         return None
@@ -175,12 +202,26 @@ def parse_estimated_delivery(text: str, now: datetime) -> str | None:
         if index != -1:
             cut = min(cut, index)
     window = "\n".join(window[:cut].splitlines()[:12])
+    eastern = now.astimezone(ZoneInfo("America/New_York")).date()
+    found: list[tuple[int, datetime]] = []
     for match in DATE_TIME.finditer(window):
+        if match.group("time"):
+            continue
         day = _parse_date(match.group("date"))
         if day is not None:
-            return day.date().isoformat()
+            found.append((match.start(), day))
+    for match in _ETA_NAMED.finditer(window):
+        if _CLOCK_AFTER.match(window[match.end() : match.end() + 48]):
+            continue
+        day = _named_eta_date(match, eastern)
+        if day is not None:
+            found.append((match.start(), day))
+    if found:
+        found.sort(key=lambda item: item[0])
+        return found[0][1].date().isoformat()
+    if _saved_page_is_stale(saved_at, eastern):
+        return None
     folded = window.lower()
-    eastern = now.astimezone(ZoneInfo("America/New_York")).date()
     if re.search(r"\btoday\b", folded):
         return eastern.isoformat()
     if re.search(r"\btomorrow\b", folded):
@@ -193,12 +234,13 @@ def parse_tracking_page(
     text: str,
     tracking_number: str,
     now: datetime | None = None,
+    saved_at: datetime | None = None,
 ) -> TrackingSnapshot:
     """Read one saved tracking page and return the current customer status."""
     name = normalize_carrier(carrier)
     number = tracking_number.strip()
     normalized = _normalize(text)
-    eta = parse_estimated_delivery(normalized, now) if now is not None else None
+    eta = parse_estimated_delivery(normalized, now, saved_at=saved_at) if now is not None else None
     if not normalized.strip():
         return _unknown(name, number, "empty tracking page", eta)
 
@@ -465,6 +507,37 @@ def _parse_when(date_text: str, time_text: str | None) -> datetime | None:
         return day
     hour, minute = clock
     return day.replace(hour=hour, minute=minute)
+
+
+def _named_eta_date(match: re.Match[str], today) -> datetime | None:
+    month = MONTHS.get(match.group("month").lower())
+    if month is None:
+        return None
+    day = int(match.group("day"))
+    year_text = match.group("year")
+    if year_text:
+        return _safe_date(int(year_text), month, day)
+    return _infer_yearless_date(month, day, today)
+
+
+def _infer_yearless_date(month: int, day: int, today) -> datetime | None:
+    """This year, or next year when the month-day is already more than a few days past."""
+    candidate = _safe_date(today.year, month, day)
+    if candidate is None:
+        return _safe_date(today.year + 1, month, day)
+    if today - candidate.date() > timedelta(days=YEARLESS_PAST_DAYS):
+        return _safe_date(today.year + 1, month, day) or candidate
+    return candidate
+
+
+def _saved_page_is_stale(saved_at: datetime | None, today) -> bool:
+    """True when the saved page file was last written on an earlier Eastern day."""
+    if saved_at is None:
+        return False
+    moment = saved_at
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=ZoneInfo("America/New_York"))
+    return moment.astimezone(ZoneInfo("America/New_York")).date() < today
 
 
 def _parse_date(date_text: str) -> datetime | None:
