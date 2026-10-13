@@ -1,6 +1,7 @@
 """The in-repo sender: staged links, contact privacy, and the standing rules."""
 
 import importlib.util
+import io
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import shutil
 import stat
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -160,6 +162,73 @@ class SenderRuleTests(unittest.TestCase):
         self.assertNotIn("ada@example.com", text)
         self.assertNotIn("Example Studio", text)
         self.assertEqual(len(_posts(self.log)), 1)
+
+    def test_cron_output_hides_customer_values_and_the_live_body_keeps_them(self):
+        secrets = (
+            "Example Studio",
+            "Ada Lovelace",
+            "Ada",
+            "ada@example.com",
+            "99999",
+            "email=",
+            "zip=",
+        )
+        delivered = _delivered_order(
+            customer_name="Ada Lovelace",
+            order_status_url=ORDER_URL,
+        )
+
+        os.environ.pop("SHIPMENT_ALLOW_EMAIL", None)
+        _write_state(self.state, delivered)
+        dry_code, dry_out = _capture_sender()
+        self.assertEqual(dry_code, 6)
+        self.assertIn("DRY-RUN", dry_out)
+        self.assertIn("Hi A***", dry_out)
+        self.assertIn("E***", dry_out)
+        self.assertIn("acctmgmt/order/details", dry_out)
+        self.assertNotIn("?", dry_out.split("acctmgmt/order/details", 1)[1][:80])
+        for secret in secrets:
+            self.assertNotIn(secret, dry_out)
+        self.assertEqual(_posts(self.log), [])
+
+        _write_state(self.state, _delivered_order(order_closed=True, customer_name="Ada Lovelace"))
+        skip_code, skip_out = _capture_sender()
+        self.assertEqual(skip_code, 0)
+        self.assertIn("Skipping", skip_out)
+        self.assertIn("E***", skip_out)
+        for secret in secrets:
+            self.assertNotIn(secret, skip_out)
+
+        os.environ["SHIPMENT_ALLOW_EMAIL"] = "1"
+        os.environ["RESEND_EMAIL_STATUS"] = "500"
+        _write_state(self.state, delivered)
+        failed_code, failed_out = _capture_sender()
+        self.assertEqual(failed_code, 1)
+        self.assertIn("FAILED", failed_out)
+        self.assertIn("E***", failed_out)
+        for secret in secrets:
+            self.assertNotIn(secret, failed_out)
+        rejected = _posts(self.log)[-1]
+        self.assertIn("ada@example.com", rejected["to"])
+        self.assertIn("Hi Ada,", rejected["text"])
+        self.assertIn("Example Studio", rejected["text"])
+        self.assertIn("99999", rejected["text"])
+        self.assertIn("email=", rejected["text"])
+
+        os.environ["RESEND_EMAIL_STATUS"] = "202"
+        _write_state(self.state, delivered)
+        live_code, live_out = _capture_sender()
+        self.assertEqual(live_code, 0)
+        self.assertIn("Sent final", live_out)
+        self.assertIn("E***", live_out)
+        for secret in secrets:
+            self.assertNotIn(secret, live_out)
+        posted = _posts(self.log)[-1]
+        self.assertIn("ada@example.com", posted["to"])
+        self.assertIn("Hi Ada,", posted["text"])
+        self.assertIn("Example Studio", posted["text"])
+        self.assertIn("99999", posted["text"])
+        self.assertIn("email=", posted["text"])
 
     def test_staged_send_is_a_dry_run_unless_email_is_allowed(self):
         os.environ.pop("SHIPMENT_ALLOW_EMAIL", None)
@@ -565,6 +634,14 @@ def _shipment() -> Shipment:
         lookup_email="buyer@example.com",
         lookup_zip="99999",
     )
+
+
+def _capture_sender():
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        code = SENDER.main()
+    return code, stdout.getvalue() + stderr.getvalue()
 
 
 def _posts(path: Path) -> list:

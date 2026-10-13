@@ -86,11 +86,36 @@ def mask_email(address):
 
 
 def mask_company(name):
-    """Keep a customer company out of DOMINIC-NOTIFY lines."""
+    """Keep a customer company or name out of cron output."""
     text = " ".join(str(name or "").split())
     if not text or text == "?":
         return text or "***"
     return f"{text[0]}***"
+
+
+_IDENTITIES = []
+
+
+def clear_customer_identities():
+    _IDENTITIES.clear()
+
+
+def note_identity(*values):
+    """Remember customer names and companies so later output can mask them."""
+    pending = []
+    for value in values:
+        text = " ".join(str(value or "").split())
+        if len(text) < 2 or text == "?" or "@" in text:
+            continue
+        pending.append(text)
+        for part in text.split(" "):
+            if len(part) >= 3 and part != text:
+                pending.append(part)
+    for text in pending:
+        if len(text) < 2 or text in _IDENTITIES:
+            continue
+        _IDENTITIES.append(text)
+    _IDENTITIES.sort(key=len, reverse=True)
 
 
 def _hide_company(text, company):
@@ -369,6 +394,47 @@ def redact_dry_run_text(text):
     return redacted
 
 
+def redact_cron_text(text):
+    """Mask company, name, email, ZIP, and URL queries on any cron line."""
+    redacted = redact_dry_run_text(text)
+    for secret in _IDENTITIES:
+        if secret not in redacted:
+            continue
+        redacted = re.sub(
+            rf"(?<!\w){re.escape(secret)}(?!\w)",
+            lambda _match, replacement=mask_company(secret): replacement,
+            redacted,
+        )
+    return redacted
+
+
+class _MaskedStream:
+    """Send every write through the cron mask, including partial prints."""
+
+    def __init__(self, raw):
+        self._raw = raw
+        self._pending = ""
+
+    def write(self, data):
+        text = data if isinstance(data, str) else str(data)
+        self._pending += text
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            self._raw.write(redact_cron_text(line) + "\n")
+        return len(text)
+
+    def flush(self):
+        if self._pending:
+            self._raw.write(redact_cron_text(self._pending))
+            self._pending = ""
+        flush = getattr(self._raw, "flush", None)
+        if flush:
+            flush()
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
+
+
 def send_email(to, subject, text, html_extra=""):
     full_text = text.rstrip("\n") + "\n" + SIGNATURE
     full_html = text_to_html(text.rstrip("\n")) + html_extra + SIGNATURE_HTML
@@ -495,6 +561,7 @@ def load_contact_book():
             "first_name": str(contact.get("first_name") or ""),
             "account": str(contact.get("account") or ""),
         }
+        note_identity(contact.get("account"), contact.get("first_name"))
     return contacts, skip
 
 
@@ -986,11 +1053,31 @@ def _notify_missing_contact(order_id, label, flagged):
     return "notify"
 
 
+def _note_order_identities(state):
+    if not isinstance(state, dict):
+        return
+    note_identity(
+        state.get("company"),
+        state.get("customer_name"),
+        state.get("label"),
+        state.get("account"),
+        state.get("first_name"),
+    )
+    orders = state.get("orders")
+    if not isinstance(orders, list):
+        return
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        note_identity(order.get("label"), order.get("company"), order.get("customer_name"))
+
+
 def send_staged(path):
     state = load_json(path, None)
     if not isinstance(state, dict):
         print("DOMINIC-NOTIFY: SHIPMENT_EMAIL_STATE is missing or unreadable; no customer email was sent.")
         return 2
+    _note_order_identities(state)
     book = load_contact_book()
     if book is None:
         return 2
@@ -1025,6 +1112,7 @@ def send_watch(path):
         return 2
     contacts, skip = book
     state = load_json(path, {})
+    _note_order_identities(state)
     ledgers = _load_ledgers()
     now = datetime.now(timezone.utc).isoformat()
     today = datetime.now().date()
@@ -1062,9 +1150,7 @@ def send_watch(path):
     return 0
 
 
-def main(argv=None):
-    """Ignore argv. The handoff in ``SHIPMENT_EMAIL_STATE`` is the staged send."""
-    del argv
+def _dispatch():
     staged = os.environ.get("SHIPMENT_EMAIL_STATE", "").strip()
     if staged:
         return send_staged(staged)
@@ -1073,6 +1159,25 @@ def main(argv=None):
         return send_watch(watch)
     print("No SHIPMENT_EMAIL_STATE or SHIPMENT_WATCH_STATE; nothing to send.")
     return 0
+
+
+def main(argv=None):
+    """Ignore argv. The handoff in ``SHIPMENT_EMAIL_STATE`` is the staged send.
+
+    Every stdout and stderr line is masked. The live Resend body is not.
+    """
+    del argv
+    clear_customer_identities()
+    previous_out, previous_err = sys.stdout, sys.stderr
+    sys.stdout = _MaskedStream(previous_out)
+    sys.stderr = _MaskedStream(previous_err)
+    try:
+        return _dispatch()
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        sys.stdout = previous_out
+        sys.stderr = previous_err
 
 
 if __name__ == "__main__":
