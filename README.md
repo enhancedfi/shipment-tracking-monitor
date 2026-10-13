@@ -2,7 +2,7 @@
 
 Tracks active phone shipments, detects status changes, and hands those changes to the existing customer email sender. It also builds the short shipment summary used at 6:00 AM, noon, and 4:00 PM Eastern.
 
-This repository does not send customer email and does not install a schedule. Checks run only when you start them. No carrier developer API credentials are required.
+This repository does not send customer email and does not install a schedule. The crons below are ready to copy in. Checks run only when you start them, or when those crons do. No carrier developer API credentials are required.
 
 ## What it watches
 
@@ -45,7 +45,32 @@ python track_shipments.py run \
 
 `run` writes the store. Email stays a dry run: it prints the sender arguments and does not start the script. `--execute` calls `send-shipment-updates.py` and also requires `SHIPMENT_ALLOW_EMAIL=1`.
 
-A tracking number imported in the same `run` as the poll has no page file until the next browser pass. The poll reports `missing_snapshot` and does not mark the line checked, so the next URL list includes it.
+The cron entry point is `run_tracking_cycle.py`. It imports `data/incoming-shipments.json` when that file exists, prints the public URLs, runs `SHIPMENT_PAGE_FETCH` when that command is set (URLs on stdin, page text into `data/page-text/<tracking_number>.txt`), then polls with `--force` and `--execute`. `--force` is only on this scheduled command, so the 2-hour cadence is not skipped by the 3-hour cooldown used for a manual check. Customer email is still at most one per 6 hours per customer. `shipped` and `delivered` still go out immediately.
+
+A tracking number imported in the same pass as the poll has no page file until the next fetch. The poll reports `missing_snapshot` and does not mark the line checked, so the next URL list includes it.
+
+### Schedules
+
+Times are Eastern (`America/New_York`). `CRON_TZ` keeps them on Eastern time when daylight saving changes. The lines live in `shipment_monitor/schedule.py`. `python -m shipment_monitor.schedule` prints the same block.
+
+AT&T order status, the existing check in `~/workspace/att-order-monitor`. Weekdays only, expanded from 9:00 AM so a same-day shipment is caught the same day:
+
+- 9:00 AM, 1:00 PM, 5:00 PM ET
+
+Tracking page fetch, poll, and send, this repo, every day:
+
+- 07:00, 09:00, 11:00, 13:00, 15:00, 17:00, 19:00, 21:00 ET
+
+```cron
+CRON_TZ=America/New_York
+SHIPMENT_ALLOW_EMAIL=1
+# AT&T order status (~/workspace/att-order-monitor). Weekdays 9:00 AM, 1:00 PM, 5:00 PM Eastern.
+0 9,13,17 * * 1-5 cd "$HOME/workspace/att-order-monitor" && python3 -m att_order_monitor
+# Tracking page fetch + poll + send. Daily 07:00, 09:00, 11:00, 13:00, 15:00, 17:00, 19:00, 21:00 Eastern.
+0 7,9,11,13,15,17,19,21 * * * cd "$HOME/workspace/shipment-tracking-monitor" && python3 run_tracking_cycle.py
+```
+
+`SHIPMENT_ALLOW_EMAIL=1` is what allows the tracking job to invoke the sender. The 6-hour throttle still applies. The AT&T command is that repo's order-status check (`python3 -m att_order_monitor`); change it in `shipment_monitor/schedule.py` if the entry point differs.
 
 Public page URLs:
 

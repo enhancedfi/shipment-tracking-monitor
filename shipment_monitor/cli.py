@@ -1,8 +1,8 @@
 """Command line for a manual check, a webhook delivery, or a briefing.
 
-Nothing here installs a schedule. Email is dry-run unless --execute is set
-and SHIPMENT_ALLOW_EMAIL=1. Even then, the only send path is the existing
-send-shipment-updates.py script.
+Nothing here installs a schedule. The crons are shipment_monitor.schedule.
+Email is dry-run unless --execute is set and SHIPMENT_ALLOW_EMAIL=1.
+Even then, the only send path is the existing send-shipment-updates.py script.
 """
 
 from __future__ import annotations
