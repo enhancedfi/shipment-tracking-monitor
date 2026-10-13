@@ -79,7 +79,6 @@ def crontab_text() -> str:
     return "\n".join(
         [
             f"CRON_TZ={EASTERN}",
-            "SHIPMENT_ALLOW_EMAIL=1",
             "# AT&T order status (~/workspace/att-order-monitor). Weekdays 9:00 AM, 1:00 PM, 5:00 PM Eastern.",
             att_order_cron(),
             f"# Tracking page fetch + poll + send. Daily {', '.join(f'{hour:02d}:00' for hour in TRACKING_CYCLE_HOURS)} Eastern.",

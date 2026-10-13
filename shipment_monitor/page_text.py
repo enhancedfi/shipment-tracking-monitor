@@ -147,9 +147,9 @@ _CLOCK_AFTER = re.compile(
     r"^[\s,]+(?:at\s+)?\d{1,2}:\d{2}\s*[AP]\.?\s*M",
     re.IGNORECASE,
 )
-# A yearless date this many days before today stays in the past (a late ETA).
-# Older than that rolls to next year.
-YEARLESS_PAST_DAYS = 7
+# A yearless date this many days before today stays in the past, including
+# Dec 31 checked on Jan 1. Older than that rolls to the next occurrence.
+YEARLESS_PAST_DAYS = 60
 
 _STATE_ZIP = re.compile(r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b")
 _STATE_COMMA = re.compile(r"\b[A-Z]{2}\b")
@@ -181,7 +181,9 @@ def parse_estimated_delivery(
     not the ETA. A saved page that says Today is ignored when ``saved_at``
     falls on an earlier Eastern day. A month and day with no year, such as
     "Wednesday, October 14" or "Oct 14", uses this year unless that day is
-    already more than a few days past, in which case it rolls to next year.
+    already more than about 60 days past, in which case it rolls forward.
+    Dec 31 checked on Jan 1 stays in the past year. A date-only scan line,
+    including a numeric date with no clock, is not the ETA.
     Returns None when the page has no estimated-delivery line.
     """
     if now.tzinfo is None:
@@ -205,13 +207,13 @@ def parse_estimated_delivery(
     eastern = now.astimezone(ZoneInfo("America/New_York")).date()
     found: list[tuple[int, datetime]] = []
     for match in DATE_TIME.finditer(window):
-        if match.group("time"):
+        if _is_scan_date(window, match.start(), match.end(), match.group("date")):
             continue
         day = _parse_date(match.group("date"))
         if day is not None:
             found.append((match.start(), day))
     for match in _ETA_NAMED.finditer(window):
-        if _CLOCK_AFTER.match(window[match.end() : match.end() + 48]):
+        if _is_scan_date(window, match.start(), match.end(), match.group(0)):
             continue
         day = _named_eta_date(match, eastern)
         if day is not None:
@@ -520,14 +522,45 @@ def _named_eta_date(match: re.Match[str], today) -> datetime | None:
     return _infer_yearless_date(month, day, today)
 
 
+def _is_scan_date(window: str, start: int, end: int, date_text: str) -> bool:
+    """True when this date is a tracking scan, not the estimated-delivery day.
+
+    A clock glued to the date is a scan. So is a numeric date that is not
+    followed by "by <time>", including a date-only last line. A status phrase
+    on the next line is a scan as well.
+    """
+    if _CLOCK_AFTER.match(window[end : end + 64]):
+        return True
+    lines = [line.strip() for line in window[end:].splitlines() if line.strip()]
+    if lines and re.match(r"by\b", lines[0], re.IGNORECASE):
+        return False
+    if "/" in date_text:
+        return True
+    before = [line.strip() for line in window[:start].splitlines() if line.strip()]
+    if before and _looks_like_location(before[-1]):
+        return True
+    if lines and _phrase_status(lines[0]) is not None:
+        return True
+    return False
+
+
 def _infer_yearless_date(month: int, day: int, today) -> datetime | None:
-    """This year, or next year when the month-day is already more than a few days past."""
-    candidate = _safe_date(today.year, month, day)
-    if candidate is None:
+    """This year, the previous year when that day was at most ~60 days ago, or next year.
+
+    Dec 31 checked on Jan 1 is one day late, so it stays Dec 31 of the past year.
+    A month-day more than about 60 days ago rolls forward.
+    """
+    this_year = _safe_date(today.year, month, day)
+    if this_year is None:
         return _safe_date(today.year + 1, month, day)
-    if today - candidate.date() > timedelta(days=YEARLESS_PAST_DAYS):
-        return _safe_date(today.year + 1, month, day) or candidate
-    return candidate
+    late = (today - this_year.date()).days
+    if late > YEARLESS_PAST_DAYS:
+        return _safe_date(today.year + 1, month, day) or this_year
+    if late < 0:
+        previous = _safe_date(today.year - 1, month, day)
+        if previous is not None and 0 <= (today - previous.date()).days <= YEARLESS_PAST_DAYS:
+            return previous
+    return this_year
 
 
 def _saved_page_is_stale(saved_at: datetime | None, today) -> bool:

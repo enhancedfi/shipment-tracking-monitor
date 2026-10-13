@@ -19,7 +19,7 @@ from shipment_monitor.carriers import FEDEX_PRODUCTION, UPS_PRODUCTION, USPS_PRO
 from shipment_monitor.clock import Clock, FakeClock, SystemClock
 from shipment_monitor.delivery_day import delivery_day_shipments
 from shipment_monitor.email_trigger import DEFAULT_SENDER, EmailTrigger, email_state_path
-from shipment_monitor.store import Store, exclusive_store_lock
+from shipment_monitor.store import Store, StoreLockTimeout, exclusive_store_lock
 from shipment_monitor.fixtures import load_fixture_clients
 from shipment_monitor.orders import load_shipments_document
 from shipment_monitor.models import Shipment, parse_time
@@ -86,8 +86,11 @@ def main(argv: list[str] | None = None) -> int:
         slot = None if args.slot == "auto" else args.slot
         sys.stdout.write(shipment_summary(store.shipments, clock.now(), slot))
         return 0
-    with exclusive_store_lock(Path(args.store)):
-        return _main_locked(args)
+    try:
+        with exclusive_store_lock(Path(args.store)):
+            return _main_locked(args)
+    except StoreLockTimeout:
+        return 0
 
 
 def _main_locked(args) -> int:

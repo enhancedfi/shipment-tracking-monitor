@@ -158,11 +158,17 @@ class OrderLinkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "send-shipment-updates.py"
             body_path = Path(tmp) / "body.html"
+            copy_path = Path(tmp) / "state-copy.json"
+            mode_path = Path(tmp) / "mode.txt"
             script.write_text(
                 "import json, os\n"
                 "from pathlib import Path\n"
-                "state = json.loads(Path(os.environ['SHIPMENT_EMAIL_STATE']).read_text(encoding='utf-8'))\n"
-                f"Path({str(body_path)!r}).write_text(state['body'], encoding='utf-8')\n",
+                "state_file = Path(os.environ['SHIPMENT_EMAIL_STATE'])\n"
+                "raw = state_file.read_text(encoding='utf-8')\n"
+                "state = json.loads(raw)\n"
+                f"Path({str(body_path)!r}).write_text(state['body'], encoding='utf-8')\n"
+                f"Path({str(copy_path)!r}).write_text(raw, encoding='utf-8')\n"
+                f"Path({str(mode_path)!r}).write_text(str(state_file.stat().st_mode & 0o777), encoding='utf-8')\n",
                 encoding="utf-8",
             )
             state_path = Path(tmp) / "shipments.json.email.json"
@@ -183,7 +189,9 @@ class OrderLinkTests(unittest.TestCase):
             self.assertIn("acctmgmt/order/details", rendered)
             self.assertIn("zip=49503", rendered)
             self.assertIn(f"track?tracknum={PREPARING}", rendered)
-            saved = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(int(mode_path.read_text(encoding="utf-8")), 0o600)
+            self.assertFalse(state_path.exists())
+            saved = json.loads(copy_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["body"], rendered)
             self.assertNotIn("--tracking-url", saved["body"])
 
@@ -264,6 +272,11 @@ class DeliveryDayTests(unittest.TestCase):
         self.assertEqual(parse_estimated_delivery("Estimated delivery\nOctober 12\n", CAPTURED), "2026-10-12")
         self.assertEqual(parse_estimated_delivery("Estimated delivery\nJanuary 5\n", CAPTURED), "2027-01-05")
 
+    def test_yearless_late_date_stays_in_the_past_year(self):
+        new_year = datetime(2027, 1, 1, 10, tzinfo=EASTERN)
+        self.assertEqual(parse_estimated_delivery("Estimated delivery\nDec 31\n", new_year), "2026-12-31")
+        self.assertEqual(parse_estimated_delivery("Estimated delivery\nDecember 31\n", new_year), "2026-12-31")
+
     def test_a_scan_date_is_not_read_as_the_eta(self):
         scan_only = "\n".join(
             [
@@ -287,6 +300,29 @@ class DeliveryDayTests(unittest.TestCase):
             ]
         )
         self.assertEqual(parse_estimated_delivery(promised, CAPTURED), "2026-10-14")
+
+    def test_a_date_only_scan_line_is_not_the_eta(self):
+        self.assertIsNone(parse_estimated_delivery("Estimated delivery\n10/13/2026\n", CAPTURED))
+        self.assertIsNone(
+            parse_estimated_delivery(
+                "Estimated delivery\n10/13/2026\nProcessing at UPS Facility\n",
+                CAPTURED,
+            )
+        )
+        self.assertEqual(
+            parse_estimated_delivery(
+                "Estimated delivery\nOctober 16, 2026\nby 9:00 PM\n10/13/2026\n",
+                CAPTURED,
+            ),
+            "2026-10-16",
+        )
+        self.assertEqual(
+            parse_estimated_delivery(
+                "Estimated delivery\nWednesday, October 14\n10/13/2026\n",
+                CAPTURED,
+            ),
+            "2026-10-14",
+        )
 
     def test_stale_saved_today_page_is_ignored_and_a_late_package_stays(self):
         with tempfile.TemporaryDirectory() as tmp:

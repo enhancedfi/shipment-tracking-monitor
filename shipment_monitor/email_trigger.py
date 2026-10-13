@@ -19,6 +19,7 @@ from pathlib import Path
 from shipment_monitor.email_body import render_email_body
 from shipment_monitor.links import email_links
 from shipment_monitor.models import Shipment
+from shipment_monitor.store import write_private_text
 
 DEFAULT_SENDER = Path.home() / "workspace" / "customer-comms" / "send-shipment-updates.py"
 EMAIL_STATE_ENV = "SHIPMENT_EMAIL_STATE"
@@ -71,10 +72,8 @@ def email_handoff(shipment: Shipment, event: str, description: str, event_time: 
 
 
 def write_email_state(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    """Write the handoff at mode 0600 from the moment it is created."""
+    write_private_text(path, json.dumps(payload, indent=2) + "\n")
 
 
 def build_argv(
@@ -156,7 +155,10 @@ class EmailTrigger:
             else:
                 os.environ[EMAIL_STATE_ENV] = previous
         if code != 0:
+            # Keep the 0600 state file so a retry can read the same handoff.
             return TriggerResult(False, f"sender_exit_{code}", tuple(argv))
+        if self.state_path is not None:
+            self.state_path.unlink(missing_ok=True)
         self.planned.append(argv)
         return TriggerResult(True, "sent", tuple(argv))
 

@@ -5,15 +5,26 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import sys
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 from shipment_monitor.models import EmailLogEntry, Shipment
 
-# Set on the process that holds the flock so a child it spawns does not
-# flock the same file and deadlock against its parent.
-LOCK_HELD_ENV = "SHIPMENT_STORE_LOCK_HELD"
+# Customer names, emails, and phone lines. Created with this mode; not chmod after.
+PRIVATE_MODE = 0o600
+# A second run waits, then skips. Long enough for one full page cycle.
+LOCK_TIMEOUT_SECONDS = 20 * 60
+
+# In-process re-entry only. A child process does not inherit this set, and an
+# environment variable cannot add to it.
+_held_locks: set[str] = set()
+
+
+class StoreLockTimeout(Exception):
+    """The store lock was still held when the wait ended. The run should skip."""
 
 
 def lockfile_for(store_path: Path) -> Path:
@@ -21,31 +32,72 @@ def lockfile_for(store_path: Path) -> Path:
     return store_path.with_name(store_path.name + ".lock")
 
 
-@contextmanager
-def exclusive_store_lock(store_path: Path) -> Iterator[None]:
-    """Hold an exclusive flock for one whole run.
+def write_private_text(path: Path, text: str) -> None:
+    """Create ``path`` as a new 0600 file and publish it with ``os.replace``.
 
-    The second run waits until this one finishes. Load the store after
-    entering and save it before leaving: the 6-hour throttle check and the
-    store write then cannot interleave with another run. A child started
-    while the lock is held sees ``SHIPMENT_STORE_LOCK_HELD`` and does not
-    take the flock again.
+    The mode is the ``os.open`` mode. Nothing chmods the file afterward.
+    ``O_NOFOLLOW`` refuses to write through a symlink.
     """
-    if os.environ.get(LOCK_HELD_ENV) == "1":
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    fd = os.open(temporary, flags, PRIVATE_MODE)
+    try:
+        payload = text.encode("utf-8")
+        view = memoryview(payload)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError(f"could not write {temporary}")
+            view = view[written:]
+    except Exception:
+        os.close(fd)
+        temporary.unlink(missing_ok=True)
+        raise
+    os.close(fd)
+    os.replace(temporary, path)
+
+
+@contextmanager
+def exclusive_store_lock(store_path: Path, timeout: float = LOCK_TIMEOUT_SECONDS) -> Iterator[None]:
+    """Hold an exclusive flock for one store command.
+
+    Load the store after entering and save it before leaving, so the throttle
+    check and the store write cannot interleave with another run. A second run
+    waits up to ``timeout`` seconds (20 minutes by default). If the lock is
+    still held, this logs and raises ``StoreLockTimeout`` so the caller skips.
+    Re-entry in this process uses ``_held_locks``. An environment variable
+    cannot grant that.
+    """
+    key = str(Path(store_path).resolve())
+    if key in _held_locks:
         yield
         return
     path = lockfile_for(store_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, PRIVATE_MODE)
+    acquired = False
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        os.environ[LOCK_HELD_ENV] = "1"
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    message = f"skipping run; lock still held: {path} after {timeout:.0f}s"
+                    print(message, file=sys.stderr)
+                    raise StoreLockTimeout(message)
+                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        _held_locks.add(key)
         try:
             yield
         finally:
-            os.environ.pop(LOCK_HELD_ENV, None)
+            _held_locks.discard(key)
     finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        if acquired:
+            fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
 
 
@@ -66,14 +118,11 @@ class Store:
         return self
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "shipments": [item.to_dict() for item in self.shipments],
             "email_log": [item.to_dict() for item in self.email_log],
         }
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, self.path)
+        write_private_text(self.path, json.dumps(payload, indent=2) + "\n")
 
     def upsert(self, incoming: list[Shipment]) -> None:
         """Insert new lines and refresh descriptive fields on existing ones.

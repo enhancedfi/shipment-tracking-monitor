@@ -47,7 +47,7 @@ python track_shipments.py run \
 
 The cron entry point is `run_tracking_cycle.py`. It imports `data/incoming-shipments.json` when that file exists, prints the public URLs, runs `SHIPMENT_PAGE_FETCH` when that command is set (URLs on stdin, page text into `data/page-text/<tracking_number>.txt`), then polls with `--force` and `--execute`. `--force` is only on this scheduled command, so the 2-hour cadence is not skipped by the 3-hour cooldown used for a manual check. Customer email is still at most one per 6 hours per customer. `shipped` and `delivered` still go out immediately.
 
-The whole run, including the throttle check and the store write, holds an exclusive flock on `data/shipments.json.lock` beside the store. A second cycle waits for that lock, so the two jobs cannot both send or overwrite each other's update.
+Each `import-shipments` and `run` command holds an exclusive flock on `data/shipments.json.lock` for the throttle check and the store write. The lock file is created at mode 0600 and opened with `O_NOFOLLOW`. A second run waits up to 20 minutes. If the lock is still held, that run skips and logs the skip. `run_tracking_cycle.py` starts those commands as separate processes, and each one takes the lock itself.
 
 A tracking number imported in the same pass as the poll has no page file until the next fetch. The poll reports `missing_snapshot` and does not mark the line checked, so the next URL list includes it.
 
@@ -70,7 +70,6 @@ Delivery-day poll, this repo, every day, only shipments whose ETA is today, whos
 
 ```cron
 CRON_TZ=America/New_York
-SHIPMENT_ALLOW_EMAIL=1
 # AT&T order status (~/workspace/att-order-monitor). Weekdays 9:00 AM, 1:00 PM, 5:00 PM Eastern.
 0 9,13,17 * * 1-5 cd "$HOME/workspace/att-order-monitor" && python3 -m att_order_monitor
 # Tracking page fetch + poll + send. Daily 07:00, 09:00, 11:00, 13:00, 15:00, 17:00, 19:00, 21:00 Eastern.
@@ -81,9 +80,9 @@ SHIPMENT_ALLOW_EMAIL=1
 0 10,12,14,16,18,20 * * * cd "$HOME/workspace/shipment-tracking-monitor" && python3 run_tracking_cycle.py --delivery-day
 ```
 
-Delivery-day means the saved page ETA is today in Eastern time, that ETA has passed and the package is not delivered, or the carrier status is already `out_for_delivery`. A standard in-transit shipment whose ETA is a later day stays on the 2-hour job. `--delivery-day` polls only those lines. `30 9-20` is 09:30 through 20:30. `0 10,12,14,16,18,20` is the on-the-hour slots the 2-hour cycle does not use. 21:30 is outside the window. A page that only says "Today" is ignored when the saved file is from an earlier Eastern day. "Wednesday, October 14" and "Oct 14" are read as estimated delivery, using this year unless that day is already more than a week past.
+Delivery-day means the saved page ETA is today in Eastern time, that ETA has passed and the package is not delivered, or the carrier status is already `out_for_delivery`. A standard in-transit shipment whose ETA is a later day stays on the 2-hour job. `--delivery-day` polls only those lines. `30 9-20` is 09:30 through 20:30. `0 10,12,14,16,18,20` is the on-the-hour slots the 2-hour cycle does not use. 21:30 is outside the window. A page that only says "Today" is ignored when the saved file is from an earlier Eastern day. "Wednesday, October 14" and "Oct 14" are read as estimated delivery. The year is this year, the previous year when that day was at most about 60 days ago (Dec 31 checked on Jan 1 stays last year), or next year when the day is already more than about 60 days past. A date-only scan line is not the ETA.
 
-`SHIPMENT_ALLOW_EMAIL=1` is what allows the tracking job to invoke the sender. The 6-hour throttle still applies. The AT&T command is that repo's order-status check (`python3 -m att_order_monitor`); change it in `shipment_monitor/schedule.py` if the entry point differs.
+Set `SHIPMENT_ALLOW_EMAIL=1` in the environment that starts the tracking job when that job should invoke the sender. The printed crontab leaves that unset. The 6-hour throttle still applies. The AT&T command is that repo's order-status check (`python3 -m att_order_monitor`); change it in `shipment_monitor/schedule.py` if the entry point differs.
 
 Public page URLs:
 
@@ -137,7 +136,7 @@ python send-shipment-updates.py \
 
 When the shipment has both a recorded lookup email and ZIP, the argv also includes `--order-status-url` and `--order-status-link`. The URL is `https://www.att.com/acctmgmt/order/details?email=...&zip=...`, and `--order-status-link` is that URL as an HTML anchor. If either lookup field is missing, those two arguments are omitted. The customer notification address is not used in their place.
 
-`send-shipment-updates.py` takes no command-line arguments, so those four link flags are ignored if they are the only place the URLs exist. The monitor writes the same payload, including `tracking_url`, `tracking_link`, `order_status_url`, `order_status_link`, and the rendered HTML `body`, to `data/shipments.json.email.json` beside the store. `SHIPMENT_EMAIL_STATE` is set to that path for the sender process. The body contains the carrier tracking link and, when lookup email and ZIP are both present, the AT&T order-status link.
+`send-shipment-updates.py` takes no command-line arguments, so those four link flags are ignored if they are the only place the URLs exist. The monitor writes the same payload, including `tracking_url`, `tracking_link`, `order_status_url`, `order_status_link`, and the rendered HTML `body`, to `data/shipments.json.email.json` beside the store. `SHIPMENT_EMAIL_STATE` is set to that path for the sender process. The file is created at mode 0600. It is deleted after the sender exits 0. When the sender exits non-zero, the file stays at mode 0600 so a retry can read the same handoff. The body contains the carrier tracking link and, when lookup email and ZIP are both present, the AT&T order-status link.
 
 `orders.json` from att-order-monitor imports through the same command. Each order's `lookup_email` and `lookup_zip` are copied onto its shipment lines:
 
@@ -264,7 +263,7 @@ text = shipment_summary(store.shipments, datetime.now(timezone.utc), slot="noon"
 
 ## Store
 
-`data/shipments.json` holds `shipments` and `email_log`. Times are timezone-aware ISO-8601, stored in UTC by the monitor. Page event times are the local clock time printed on the tracking page. The email log is how the 6-hour window is counted, and it is written only after the sender exits 0.
+`data/shipments.json` holds `shipments` and `email_log` and is written at mode 0600. Times are timezone-aware ISO-8601, stored in UTC by the monitor. Page event times are the local clock time printed on the tracking page. The email log is how the 6-hour window is counted, and it is written only after the sender exits 0.
 
 ## Tests
 

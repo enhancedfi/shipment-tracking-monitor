@@ -21,7 +21,7 @@ from pathlib import Path
 
 from shipment_monitor.delivery_day import delivery_day_shipments
 from shipment_monitor.page_source import active_page_targets, tracking_page_url
-from shipment_monitor.store import Store, exclusive_store_lock
+from shipment_monitor.store import Store
 
 ROOT = Path(__file__).resolve().parent
 
@@ -40,8 +40,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     store_path = Path(args.store)
-    with exclusive_store_lock(store_path):
-        return _run_locked(args, store_path)
+    # import and run each take the store lock inside track_shipments.py.
+    # Holding it here as well would deadlock those children.
+    return _run_locked(args, store_path)
 
 
 def _run_locked(args, store_path: Path) -> int:

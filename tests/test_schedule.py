@@ -45,7 +45,7 @@ class ScheduleTests(unittest.TestCase):
         self.assertIn("python3 run_tracking_cycle.py", tracking_cycle_cron())
         text = crontab_text()
         self.assertTrue(text.startswith("CRON_TZ=America/New_York\n"))
-        self.assertIn("SHIPMENT_ALLOW_EMAIL=1\n", text)
+        self.assertNotIn("SHIPMENT_ALLOW_EMAIL", text)
         self.assertIn(att_order_cron() + "\n", text)
         self.assertIn(tracking_cycle_cron() + "\n", text)
 
@@ -57,6 +57,8 @@ class ScheduleTests(unittest.TestCase):
         self.assertIn(first, readme)
         self.assertIn(last, readme)
         self.assertIn("CRON_TZ=America/New_York", readme)
+        cron = readme.split("```cron\n", 1)[1].split("\n```", 1)[0]
+        self.assertNotIn("SHIPMENT_ALLOW_EMAIL", cron)
         self.assertIn("9:00 AM, 1:00 PM, 5:00 PM", readme)
         self.assertIn("07:00, 09:00, 11:00, 13:00, 15:00, 17:00, 19:00, 21:00", readme)
         self.assertIn("--delivery-day", readme)
