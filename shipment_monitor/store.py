@@ -56,6 +56,12 @@ class Store:
             current.device = item.device
             current.carrier = item.carrier
             current.tracking_number = item.tracking_number
+            if item.lookup_email:
+                current.lookup_email = item.lookup_email
+            if item.lookup_zip:
+                current.lookup_zip = item.lookup_zip
+            if item.estimated_delivery:
+                current.estimated_delivery = item.estimated_delivery
             if item.order_closed:
                 current.order_closed = True
         self.shipments.sort(key=lambda shipment: shipment.shipment_id)

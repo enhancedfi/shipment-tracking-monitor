@@ -61,6 +61,10 @@ Tracking page fetch, poll, and send, this repo, every day:
 
 - 07:00, 09:00, 11:00, 13:00, 15:00, 17:00, 19:00, 21:00 ET
 
+Delivery-day poll, this repo, every day, only shipments whose ETA is today or that are out for delivery:
+
+- every 30 minutes from 09:00 through 21:00 ET
+
 ```cron
 CRON_TZ=America/New_York
 SHIPMENT_ALLOW_EMAIL=1
@@ -68,7 +72,12 @@ SHIPMENT_ALLOW_EMAIL=1
 0 9,13,17 * * 1-5 cd "$HOME/workspace/att-order-monitor" && python3 -m att_order_monitor
 # Tracking page fetch + poll + send. Daily 07:00, 09:00, 11:00, 13:00, 15:00, 17:00, 19:00, 21:00 Eastern.
 0 7,9,11,13,15,17,19,21 * * * cd "$HOME/workspace/shipment-tracking-monitor" && python3 run_tracking_cycle.py
+# Delivery-day poll only. Every 30 minutes from 09:00 through 21:00 Eastern.
+0,30 9-20 * * * cd "$HOME/workspace/shipment-tracking-monitor" && python3 run_tracking_cycle.py --delivery-day
+0 21 * * * cd "$HOME/workspace/shipment-tracking-monitor" && python3 run_tracking_cycle.py --delivery-day
 ```
+
+Delivery-day means the saved page ETA is today in Eastern time, or the carrier status is already `out_for_delivery`. A standard in-transit shipment whose ETA is another day stays on the 2-hour job. `--delivery-day` polls only those lines. `0,30 9-20` covers 09:00 through 20:30; `0 21` is 21:00, so 21:30 is outside the window.
 
 `SHIPMENT_ALLOW_EMAIL=1` is what allows the tracking job to invoke the sender. The 6-hour throttle still applies. The AT&T command is that repo's order-status check (`python3 -m att_order_monitor`); change it in `shipment_monitor/schedule.py` if the entry point differs.
 
@@ -117,7 +126,17 @@ python send-shipment-updates.py \
   --carrier fedex|ups|usps \
   --tracking-number ... \
   --status-description ... \
-  --event-time ...
+  --event-time ... \
+  --tracking-url ... \
+  --tracking-link <a href="...">Track shipment</a>
+```
+
+When the shipment has both a recorded lookup email and ZIP, the argv also includes `--order-status-url` and `--order-status-link`. The URL is `https://www.att.com/acctmgmt/order/details?email=...&zip=...`, and `--order-status-link` is that URL as an HTML anchor. If either lookup field is missing, those two arguments are omitted. The customer notification address is not used in their place.
+
+`orders.json` from att-order-monitor imports through the same command. Each order's `lookup_email` and `lookup_zip` are copied onto its shipment lines:
+
+```bash
+python track_shipments.py import-shipments --store data/shipments.json --input data/orders.json
 ```
 
 Override the path with `--sender` or `SHIPMENT_SENDER_SCRIPT`. The default command is a dry run: it prints the arguments and does not start the script.
@@ -140,7 +159,7 @@ Page-text polling:
 - A tracking number is skipped for 3 hours after a successful read (`--cooldown-hours`, `SHIPMENT_COOLDOWN_HOURS`).
 - A missing text file is `missing_snapshot`. The line is not marked checked.
 
-Official APIs are optional. They are used only when no page-text directory is configured. Leave the variables unset if you are not using them.
+Official APIs are an explicit opt-in. `check --api` or `SHIPMENT_USE_API=1` builds them, and only when no page-text directory is configured. A manual `check` with API keys in the environment and an empty page-text folder does not call the APIs. `run` and the crons stay on saved page text. Leave the variables unset if you are not using them.
 
 - Calls to one carrier are spaced by `CARRIER_MIN_INTERVAL_SECONDS` (default 1).
 - Each run allows `SHIPMENT_MAX_TRACK_REQUESTS` HTTP calls per carrier (default 60). FedEx numbers are sent in batches of 30.

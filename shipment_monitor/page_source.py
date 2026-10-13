@@ -54,12 +54,14 @@ def active_page_targets(shipments: list[Shipment]) -> list[tuple[str, str]]:
 class WebPageClient(CarrierClient):
     """TrackingSnapshot source backed by saved public tracking-page text."""
 
-    def __init__(self, carrier: str, directory: Path) -> None:
+    def __init__(self, carrier: str, directory: Path, clock=None) -> None:
         self.carrier = normalize_carrier(carrier)
         self.directory = directory
+        self.clock = clock
 
     def track_many(self, numbers: list[str]) -> list[TrackingSnapshot]:
         root = self.directory.resolve()
+        now = self.clock.now() if self.clock is not None else None
         snapshots: list[TrackingSnapshot] = []
         for number in numbers:
             path = (self.directory / f"{number}.txt").resolve()
@@ -68,9 +70,9 @@ class WebPageClient(CarrierClient):
             text = path.read_text(encoding="utf-8", errors="replace")
             if not text.strip():
                 continue
-            snapshots.append(parse_tracking_page(self.carrier, text, number))
+            snapshots.append(parse_tracking_page(self.carrier, text, number, now=now))
         return snapshots
 
 
-def web_page_clients(directory: Path) -> dict[str, WebPageClient]:
-    return {name: WebPageClient(name, directory) for name in ("fedex", "ups", "usps")}
+def web_page_clients(directory: Path, clock=None) -> dict[str, WebPageClient]:
+    return {name: WebPageClient(name, directory, clock) for name in ("fedex", "ups", "usps")}

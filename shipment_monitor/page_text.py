@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from shipment_monitor.models import (
     DELAYED,
@@ -149,13 +150,57 @@ class _Scan:
     index: int
 
 
-def parse_tracking_page(carrier: str, text: str, tracking_number: str) -> TrackingSnapshot:
+def parse_estimated_delivery(text: str, now: datetime) -> str | None:
+    """Eastern calendar day promised by the tracking page, as YYYY-MM-DD.
+
+    "Today" and "Tomorrow" use ``now`` in America/New_York. A scan date
+    under Shipment Progress is not the ETA. Returns None when the page
+    has no estimated-delivery line.
+    """
+    if now.tzinfo is None:
+        return None
+    normalized = _normalize(text)
+    label = re.search(
+        r"(?:estimated|expected|scheduled)\s+delivery(?:\s+date)?",
+        normalized,
+        re.IGNORECASE,
+    )
+    if label is None:
+        return None
+    window = normalized[label.end() :]
+    lowered = window.lower()
+    cut = len(window)
+    for marker in PROGRESS_MARKERS:
+        index = lowered.find(marker)
+        if index != -1:
+            cut = min(cut, index)
+    window = "\n".join(window[:cut].splitlines()[:12])
+    for match in DATE_TIME.finditer(window):
+        day = _parse_date(match.group("date"))
+        if day is not None:
+            return day.date().isoformat()
+    folded = window.lower()
+    eastern = now.astimezone(ZoneInfo("America/New_York")).date()
+    if re.search(r"\btoday\b", folded):
+        return eastern.isoformat()
+    if re.search(r"\btomorrow\b", folded):
+        return (eastern + timedelta(days=1)).isoformat()
+    return None
+
+
+def parse_tracking_page(
+    carrier: str,
+    text: str,
+    tracking_number: str,
+    now: datetime | None = None,
+) -> TrackingSnapshot:
     """Read one saved tracking page and return the current customer status."""
     name = normalize_carrier(carrier)
     number = tracking_number.strip()
     normalized = _normalize(text)
+    eta = parse_estimated_delivery(normalized, now) if now is not None else None
     if not normalized.strip():
-        return _unknown(name, number, "empty tracking page")
+        return _unknown(name, number, "empty tracking page", eta)
 
     banner = _banner(_header_region(normalized))
     readings = _scan_readings(_extract_scans(normalized))
@@ -192,10 +237,10 @@ def parse_tracking_page(carrier: str, text: str, tracking_number: str) -> Tracki
         canonical = status
         event = latest[0].when
     else:
-        return _unknown(name, number, "unrecognized tracking page")
+        return _unknown(name, number, "unrecognized tracking page", eta)
 
     if status == UNKNOWN:
-        return _unknown(name, number, description or "unrecognized tracking page")
+        return _unknown(name, number, description or "unrecognized tracking page", eta)
 
     return TrackingSnapshot(
         carrier=name,
@@ -205,16 +250,18 @@ def parse_tracking_page(carrier: str, text: str, tracking_number: str) -> Tracki
         description=description,
         event_time=_iso(event) if event else None,
         source="page",
+        estimated_delivery=eta,
     )
 
 
-def _unknown(carrier: str, number: str, description: str) -> TrackingSnapshot:
+def _unknown(carrier: str, number: str, description: str, estimated_delivery: str | None = None) -> TrackingSnapshot:
     return TrackingSnapshot(
         carrier=carrier,
         tracking_number=number,
         status=UNKNOWN,
         description=description,
         source="page",
+        estimated_delivery=estimated_delivery,
     )
 
 

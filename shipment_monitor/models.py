@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -54,6 +55,7 @@ class TrackingSnapshot:
     description: str = ""
     event_time: str | None = None
     source: str = "api"
+    estimated_delivery: str | None = None
 
     def __post_init__(self) -> None:
         self.carrier = normalize_carrier(self.carrier)
@@ -82,11 +84,16 @@ class Shipment:
     notified_events: list[str] = field(default_factory=list)
     pending_event: str | None = None
     pending_event_at: str | None = None
+    lookup_email: str = ""
+    lookup_zip: str = ""
+    estimated_delivery: str | None = None
 
     def __post_init__(self) -> None:
         self.carrier = normalize_carrier(self.carrier) if self.carrier else self.carrier
         self.customer_email = self.customer_email.strip().lower()
         self.tracking_number = self.tracking_number.strip()
+        self.lookup_email = self.lookup_email.strip()
+        self.lookup_zip = re.sub(r"\s+", "", self.lookup_zip or "")
 
     def to_dict(self) -> dict:
         return {
@@ -110,6 +117,9 @@ class Shipment:
             "notified_events": list(self.notified_events),
             "pending_event": self.pending_event,
             "pending_event_at": self.pending_event_at,
+            "lookup_email": self.lookup_email,
+            "lookup_zip": self.lookup_zip,
+            "estimated_delivery": self.estimated_delivery,
         }
 
     @classmethod
@@ -149,6 +159,9 @@ class Shipment:
             notified_events=list(raw.get("notified_events") or []),
             pending_event=raw.get("pending_event"),
             pending_event_at=raw.get("pending_event_at"),
+            lookup_email=str(raw.get("lookup_email") or ""),
+            lookup_zip=str(raw.get("lookup_zip") or ""),
+            estimated_delivery=raw.get("estimated_delivery") or None,
         )
 
 

@@ -24,6 +24,10 @@ ATT_ORDER_COMMAND = 'cd "$HOME/workspace/att-order-monitor" && python3 -m att_or
 TRACKING_CYCLE_HOURS = (7, 9, 11, 13, 15, 17, 19, 21)
 TRACKING_CYCLE_COMMAND = 'cd "$HOME/workspace/shipment-tracking-monitor" && python3 run_tracking_cycle.py'
 
+# Every 30 minutes from 09:00 through 21:00 Eastern, inclusive.
+# Half hours run through 20:30. 21:00 is its own minute so 21:30 is not included.
+DELIVERY_DAY_COMMAND = f"{TRACKING_CYCLE_COMMAND} --delivery-day"
+
 
 def _hours(values: tuple[int, ...]) -> str:
     return ",".join(str(hour) for hour in values)
@@ -39,16 +43,41 @@ def tracking_cycle_cron() -> str:
     return f"0 {_hours(TRACKING_CYCLE_HOURS)} * * * {TRACKING_CYCLE_COMMAND}"
 
 
+def delivery_day_cron_lines() -> tuple[str, str]:
+    """30-minute delivery-day poll from 09:00 through 21:00 Eastern."""
+    return (
+        f"0,30 9-20 * * * {DELIVERY_DAY_COMMAND}",
+        f"0 21 * * * {DELIVERY_DAY_COMMAND}",
+    )
+
+
+def delivery_day_clock_times() -> tuple[str, ...]:
+    """09:00, 09:30, ... 21:00 Eastern."""
+    times: list[str] = []
+    hour, minute = 9, 0
+    while (hour, minute) <= (21, 0):
+        times.append(f"{hour:02d}:{minute:02d}")
+        minute += 30
+        if minute >= 60:
+            hour += 1
+            minute = 0
+    return tuple(times)
+
+
 def crontab_text() -> str:
     """Installable crontab. Copy it; this repository does not install it."""
+    first, last = delivery_day_cron_lines()
     return "\n".join(
         [
             f"CRON_TZ={EASTERN}",
             "SHIPMENT_ALLOW_EMAIL=1",
-            f"# AT&T order status (~/workspace/att-order-monitor). Weekdays 9:00 AM, 1:00 PM, 5:00 PM Eastern.",
+            "# AT&T order status (~/workspace/att-order-monitor). Weekdays 9:00 AM, 1:00 PM, 5:00 PM Eastern.",
             att_order_cron(),
             f"# Tracking page fetch + poll + send. Daily {', '.join(f'{hour:02d}:00' for hour in TRACKING_CYCLE_HOURS)} Eastern.",
             tracking_cycle_cron(),
+            "# Delivery-day poll only. Every 30 minutes from 09:00 through 21:00 Eastern.",
+            first,
+            last,
             "",
         ]
     )

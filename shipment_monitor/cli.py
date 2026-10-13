@@ -17,8 +17,10 @@ from pathlib import Path
 from shipment_monitor.briefing import shipment_summary
 from shipment_monitor.carriers import FEDEX_PRODUCTION, UPS_PRODUCTION, USPS_PRODUCTION, FedExClient, UPSClient, USPSClient
 from shipment_monitor.clock import Clock, FakeClock, SystemClock
+from shipment_monitor.delivery_day import delivery_day_shipments
 from shipment_monitor.email_trigger import DEFAULT_SENDER, EmailTrigger
 from shipment_monitor.fixtures import load_fixture_clients
+from shipment_monitor.orders import load_shipments_document
 from shipment_monitor.models import Shipment, parse_time
 from shipment_monitor.monitor import run_check
 from shipment_monitor.monitor import apply_webhook
@@ -38,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     _add_email_flags(check)
     check.add_argument("--fixtures", help="Directory of carrier JSON fixtures. Skips live APIs and page text.")
     check.add_argument("--pages", help="Directory of <tracking_number>.txt public tracking-page text")
+    check.add_argument("--api", action="store_true", help="Use official carrier APIs. Requires credentials. Ignored when page text is configured.")
+    check.add_argument("--delivery-day", action="store_true", help="Poll only shipments whose ETA is today or that are out for delivery")
     check.add_argument("--force", action="store_true", help="Poll even inside the cooldown window")
     check.add_argument("--cooldown-hours", type=float, default=float(os.environ.get("SHIPMENT_COOLDOWN_HOURS", "3")))
     check.add_argument("--now", help="ISO timestamp used instead of the wall clock")
@@ -54,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         "--pages",
         help="Directory of <tracking_number>.txt public tracking-page text. Default: data/page-text",
     )
+    run.add_argument("--delivery-day", action="store_true", help="Poll only shipments whose ETA is today or that are out for delivery")
     run.add_argument("--force", action="store_true", help="Poll even inside the cooldown window")
     run.add_argument("--cooldown-hours", type=float, default=float(os.environ.get("SHIPMENT_COOLDOWN_HOURS", "3")))
     run.add_argument("--now", help="ISO timestamp used instead of the wall clock")
@@ -98,6 +103,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command in {"check", "run"}:
         carriers = _carriers(args, clock)
+        only_ids = None
+        if getattr(args, "delivery_day", False):
+            only_ids = {
+                item.shipment_id
+                for item in delivery_day_shipments(store.shipments, clock.now(), _pages_for_selection(args))
+            }
         results = run_check(
             store,
             carriers,
@@ -106,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
             cooldown=timedelta(hours=args.cooldown_hours),
             force=args.force,
             persist=args.command == "run" or getattr(args, "commit", False) or args.execute,
+            only_ids=only_ids,
         )
         _print_results(results)
         return 0
@@ -157,7 +169,9 @@ def _carriers(args, clock: Clock) -> dict:
         return load_fixture_clients(Path(args.fixtures))
     page_dir = _page_directory(args)
     if page_dir is not None:
-        return web_page_clients(page_dir)
+        return web_page_clients(page_dir, clock)
+    if not _api_opt_in(args):
+        return {}
     interval = float(os.environ.get("CARRIER_MIN_INTERVAL_SECONDS", "1"))
     budget_limit = int(os.environ.get("SHIPMENT_MAX_TRACK_REQUESTS", "60"))
     limiter = SpacingLimiter(interval, clock)
@@ -203,7 +217,8 @@ def _page_directory(args) -> Path | None:
 
     `run` always reads page text. `check` uses it when --pages or
     SHIPMENT_PAGE_TEXT_DIR is set, or when data/page-text already holds
-    files. Official API clients remain the path when no page text is configured.
+    files. Official API clients are used only with --api or
+    SHIPMENT_USE_API=1, and only when no page text is configured.
     """
     explicit = getattr(args, "pages", None)
     if explicit:
@@ -219,6 +234,27 @@ def _page_directory(args) -> Path | None:
     return None
 
 
+def _api_opt_in(args) -> bool:
+    return bool(getattr(args, "api", False)) or os.environ.get("SHIPMENT_USE_API") == "1"
+
+
+def _pages_for_selection(args) -> Path | None:
+    explicit = getattr(args, "pages", None)
+    if explicit:
+        path = Path(explicit)
+        return path if path.is_dir() else None
+    if getattr(args, "fixtures", None):
+        return None
+    env = os.environ.get("SHIPMENT_PAGE_TEXT_DIR")
+    if env:
+        path = Path(env)
+        return path if path.is_dir() else None
+    default = Path("data/page-text")
+    if default.is_dir():
+        return default
+    return None
+
+
 def _require_page_dir(path: Path) -> Path:
     if not path.is_dir():
         raise SystemExit(
@@ -230,8 +266,7 @@ def _require_page_dir(path: Path) -> Path:
 
 def _load_shipments(path: Path) -> list[Shipment]:
     raw = json.loads(path.read_text(encoding="utf-8"))
-    rows = raw["shipments"] if isinstance(raw, dict) else raw
-    return [Shipment.from_dict(item) for item in rows]
+    return load_shipments_document(raw)
 
 
 def _print_results(results) -> None:

@@ -63,15 +63,25 @@ def run_check(
     cooldown: timedelta = DEFAULT_COOLDOWN,
     force: bool = False,
     persist: bool = True,
+    only_ids: set[str] | None = None,
 ) -> list[CheckResult]:
-    """Poll due tracking numbers, then admit emails under the standing guards."""
+    """Poll due tracking numbers, then admit emails under the standing guards.
+
+    ``only_ids`` limits the pass to those shipments. The delivery-day job
+    uses it so a 30-minute run does not poll the rest of the book.
+    """
     now = clock.now()
     results: list[CheckResult] = []
     candidates: list[_Candidate] = []
     polled_ids: set[str] = set()
 
+    def selected(shipment: Shipment) -> bool:
+        return only_ids is None or shipment.shipment_id in only_ids
+
     grouped: dict[str, list[Shipment]] = {}
     for shipment in store.shipments:
+        if not selected(shipment):
+            continue
         if not due_for_poll(shipment, now, cooldown, force):
             continue
         grouped.setdefault(shipment.carrier, []).append(shipment)
@@ -101,7 +111,7 @@ def run_check(
             _collect(candidates, results, shipment, observation)
 
     for shipment in store.shipments:
-        if shipment.shipment_id in polled_ids:
+        if shipment.shipment_id in polled_ids or not selected(shipment):
             continue
         observation = pending_candidate(shipment)
         if observation is None:

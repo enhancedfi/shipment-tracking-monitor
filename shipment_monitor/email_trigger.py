@@ -12,6 +12,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from shipment_monitor.links import email_links
 from shipment_monitor.models import Shipment
 
 DEFAULT_SENDER = Path.home() / "workspace" / "customer-comms" / "send-shipment-updates.py"
@@ -32,7 +33,7 @@ def build_argv(
     event_time: str,
     python: str = sys.executable,
 ) -> list[str]:
-    return [
+    argv = [
         python,
         str(script),
         "--event",
@@ -60,6 +61,11 @@ def build_argv(
         "--event-time",
         event_time,
     ]
+    tracking_url, tracking_html, order_url, order_html = email_links(shipment)
+    argv.extend(["--tracking-url", tracking_url, "--tracking-link", tracking_html])
+    if order_url and order_html:
+        argv.extend(["--order-status-url", order_url, "--order-status-link", order_html])
+    return argv
 
 
 class EmailTrigger:

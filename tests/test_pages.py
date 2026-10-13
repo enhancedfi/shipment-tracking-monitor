@@ -26,7 +26,7 @@ def _page(number: str) -> str:
 
 
 def _clean_env() -> dict[str, str]:
-    skip = {"SHIPMENT_ALLOW_EMAIL", "SHIPMENT_PAGE_TEXT_DIR", "SHIPMENT_SENDER_SCRIPT"}
+    skip = {"SHIPMENT_ALLOW_EMAIL", "SHIPMENT_PAGE_TEXT_DIR", "SHIPMENT_SENDER_SCRIPT", "SHIPMENT_USE_API"}
     env = {}
     for key, value in os.environ.items():
         if key in skip or key.endswith("_CLIENT_ID") or key.endswith("_CLIENT_SECRET") or key.endswith("_API_BASE"):
@@ -389,13 +389,16 @@ class PageFlowTests(unittest.TestCase):
 
         from shipment_monitor.clock import FakeClock
 
-        args = type("Args", (), {"command": "check", "fixtures": None, "pages": None})()
-        keys = ("UPS_CLIENT_ID", "UPS_CLIENT_SECRET", "SHIPMENT_PAGE_TEXT_DIR")
+        args = type("Args", (), {"command": "check", "fixtures": None, "pages": None, "api": False})()
+        keys = ("UPS_CLIENT_ID", "UPS_CLIENT_SECRET", "SHIPMENT_PAGE_TEXT_DIR", "SHIPMENT_USE_API")
         previous = {key: os.environ.get(key) for key in keys}
         os.environ["UPS_CLIENT_ID"] = "id"
         os.environ["UPS_CLIENT_SECRET"] = "secret"
         os.environ.pop("SHIPMENT_PAGE_TEXT_DIR", None)
+        os.environ.pop("SHIPMENT_USE_API", None)
         try:
+            blocked = _carriers(args, FakeClock(datetime(2026, 10, 13, tzinfo=timezone.utc)))
+            args.api = True
             clients = _carriers(args, FakeClock(datetime(2026, 10, 13, tzinfo=timezone.utc)))
         finally:
             for key, value in previous.items():
@@ -403,6 +406,7 @@ class PageFlowTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+        self.assertEqual(blocked, {})
         self.assertIsInstance(clients["ups"], UPSClient)
         self.assertNotIn("fedex", clients)
 

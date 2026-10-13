@@ -18,6 +18,8 @@ from shipment_monitor.schedule import (
     TRACKING_CYCLE_HOURS,
     att_order_cron,
     crontab_text,
+    delivery_day_clock_times,
+    delivery_day_cron_lines,
     tracking_cycle_cron,
 )
 
@@ -51,9 +53,27 @@ class ScheduleTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn(att_order_cron(), readme)
         self.assertIn(tracking_cycle_cron(), readme)
+        first, last = delivery_day_cron_lines()
+        self.assertIn(first, readme)
+        self.assertIn(last, readme)
         self.assertIn("CRON_TZ=America/New_York", readme)
         self.assertIn("9:00 AM, 1:00 PM, 5:00 PM", readme)
         self.assertIn("07:00, 09:00, 11:00, 13:00, 15:00, 17:00, 19:00, 21:00", readme)
+        self.assertIn("--delivery-day", readme)
+
+    def test_schedule_lists_the_30_minute_delivery_day_job(self):
+        times = delivery_day_clock_times()
+        self.assertEqual(times[0], "09:00")
+        self.assertEqual(times[-1], "21:00")
+        self.assertEqual(times[1], "09:30")
+        self.assertNotIn("21:30", times)
+        self.assertEqual(len(times), 25)
+        first, last = delivery_day_cron_lines()
+        self.assertIn("0,30 9-20 * * *", first)
+        self.assertIn("--delivery-day", first)
+        self.assertTrue(last.startswith("0 21 * * * "))
+        self.assertIn(first, crontab_text())
+        self.assertIn(last, crontab_text())
 
     def test_email_throttle_is_unchanged(self):
         self.assertEqual(EMAIL_WINDOW, timedelta(hours=6))
