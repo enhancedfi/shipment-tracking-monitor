@@ -85,11 +85,26 @@ def mask_email(address):
     return f"{local[0]}***@{domain}"
 
 
+def mask_company(name):
+    """Keep a customer company out of DOMINIC-NOTIFY lines."""
+    text = " ".join(str(name or "").split())
+    if not text or text == "?":
+        return text or "***"
+    return f"{text[0]}***"
+
+
+def _hide_company(text, company):
+    raw = " ".join(str(company or "").split())
+    if len(raw) < 2 or raw not in text:
+        return text
+    return text.replace(raw, mask_company(raw))
+
+
 def _public_label(label):
     text = str(label or "?").strip() or "?"
     if "@" in text:
         return mask_email(text)
-    return text
+    return mask_company(text)
 
 
 def comms_dir():
@@ -334,8 +349,14 @@ def domain_verified():
     return False
 
 
+def _mask_greeting(match):
+    name = match.group(1).strip()
+    masked = f"{name[0]}***" if name else "***"
+    return f"Hi {masked},"
+
+
 def redact_dry_run_text(text):
-    """Drop order-link query values, customer emails, and ZIPs from a dry-run print."""
+    """Drop order-link query values, customer emails, ZIPs, and the greeting name."""
     redacted = re.sub(r"(https?://[^\s?#]+)\?[^\s]*", r"\1", text)
     redacted = re.sub(
         r"[A-Za-z0-9._%+-]+(?:%40|@)[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
@@ -344,6 +365,7 @@ def redact_dry_run_text(text):
     )
     redacted = re.sub(r"([?&](?:email|zip)=)[^\s&]+", r"\1***", redacted, flags=re.IGNORECASE)
     redacted = re.sub(r"\b\d{5}(?:-\d{4})?\b", "*****", redacted)
+    redacted = re.sub(r"(?m)^Hi ([^,\n]+),", _mask_greeting, redacted)
     return redacted
 
 
@@ -515,12 +537,13 @@ def log_send(contact, line, event, subject, msg_id, notify=True):
         print(f"WARN: could not write sent log: {exc}")
     tracking = line.get("tracking") or ""
     if notify:
-        print(
-            f"DOMINIC-NOTIFY: {event} email sent to {contact['account']} "
+        print(_hide_company(
+            f"DOMINIC-NOTIFY: {event} email sent to {mask_company(contact['account'])} "
             f"({mask_email(contact['email'])}), {line.get('device')} line ...{line.get('line_ending')}"
             + (f", tracking {tracking}" if tracking else "")
-            + f" | subject: {subject}"
-        )
+            + f" | subject: {subject}",
+            contact["account"],
+        ))
 
 
 def maybe_send_shipped_batch(contact, order_id, lines, ledger, throttle_ledger, now):
@@ -550,12 +573,13 @@ def maybe_send_shipped_batch(contact, order_id, lines, ledger, throttle_ledger, 
         f"{line.get('device')} ...{line.get('line_ending')}" for line in new_lines
     )
     trackings = sorted({line.get("tracking") for line in new_lines if line.get("tracking")})
-    print(
-        f"DOMINIC-NOTIFY: shipped email sent to {contact['account']} "
+    print(_hide_company(
+        f"DOMINIC-NOTIFY: shipped email sent to {mask_company(contact['account'])} "
         f"({mask_email(contact['email'])}), {len(new_lines)} phone(s): {devices}"
         + (f", tracking {', '.join(trackings)}" if trackings else "")
-        + f" | subject: {subject}"
-    )
+        + f" | subject: {subject}",
+        contact["account"],
+    ))
     print(f"Sent shipped update to {mask_email(contact['email'])} ({len(new_lines)} lines, 1 email)")
     return "sent"
 
@@ -894,11 +918,12 @@ def process_watch_order(order, contact, skip_status_quo, ledger, throttle_ledger
             start = parse_window_start(label, today)
             if start is not None and 0 <= (start - today).days <= 7:
                 suffix = f" (window opens {start.strftime('%b %d')}, about a week out)"
-            print(
-                f"DOMINIC-NOTIFY: about-to-ship: {contact['account']}, "
+            print(_hide_company(
+                f"DOMINIC-NOTIFY: about-to-ship: {mask_company(contact['account'])}, "
                 f"{len(endings)} line(s) ...{', ...'.join(endings)}, "
-                f"AT&T expected ship {label}{suffix}"
-            )
+                f"AT&T expected ship {label}{suffix}",
+                contact["account"],
+            ))
             about_ledger[key] = now
     if pending and order_id not in skip_status_quo:
         quo = maybe_send_status_quo(contact, order_id, pending, windows, quo_ledger, now)

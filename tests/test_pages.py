@@ -175,10 +175,9 @@ class PageTextTests(unittest.TestCase):
         self.assertEqual(parse_tracking_page("usps", pickup, "9400111899223344556678").status, OUT_FOR_DELIVERY)
         self.assertEqual(parse_tracking_page("usps", alert, "9400111899223344556679").status, "delayed")
         self.assertEqual(parse_tracking_page("usps", label, "9400111899223344556680").status, PENDING)
+        place = "Faketown, ZZ 99999"
         for page in (in_transit, pickup, alert):
-            self.assertIn("Faketown, ZZ 99999", page)
-            self.assertNotIn("WYOMING", page)
-            self.assertNotIn("49519", page)
+            self.assertEqual(page.splitlines()[-1], place)
 
     def test_missing_page_file_is_not_a_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -138,6 +138,8 @@ class SenderRuleTests(unittest.TestCase):
         self.assertEqual(code, 5)
         self.assertIn("DOMINIC-NOTIFY", stdout)
         self.assertIn("no CONTACTS entry", stdout)
+        self.assertIn("E***", stdout.value())
+        self.assertNotIn("Example Studio", stdout.value())
         self.assertNotIn("ada@example.com", stdout.value())
         self.assertNotIn("@", stdout.value())
         self.assertEqual(_posts(self.log), [])
@@ -154,7 +156,9 @@ class SenderRuleTests(unittest.TestCase):
             self.assertEqual(SENDER.main(), 0)
         text = stdout.value()
         self.assertIn("a***@example.com", text)
+        self.assertIn("E***", text)
         self.assertNotIn("ada@example.com", text)
+        self.assertNotIn("Example Studio", text)
         self.assertEqual(len(_posts(self.log)), 1)
 
     def test_staged_send_is_a_dry_run_unless_email_is_allowed(self):
@@ -165,6 +169,8 @@ class SenderRuleTests(unittest.TestCase):
         text = stdout.value()
         self.assertIn("DRY-RUN", text)
         self.assertIn("Your Phone A is on its way!", text)
+        self.assertIn("Hi A***", text)
+        self.assertNotIn("Ada", text)
         self.assertNotIn("ada@example.com", text)
         self.assertNotIn("99999", text)
         self.assertNotIn("email=", text)
@@ -216,6 +222,8 @@ class SenderRuleTests(unittest.TestCase):
         self.assertIn("99999", saved["order_status_url"])
         text = stdout.value()
         self.assertIn("DRY-RUN", text)
+        self.assertIn("Hi A***", text)
+        self.assertNotIn("Ada", text)
         self.assertNotIn("buyer@example.com", text)
         self.assertNotIn("ada@example.com", text)
         self.assertNotIn("99999", text)
@@ -241,6 +249,8 @@ class SenderRuleTests(unittest.TestCase):
         with self.assertLogsStdout() as stdout:
             self.assertEqual(SENDER.main(), 6)
         self.assertIn("DRY-RUN", stdout)
+        self.assertIn("Hi A***", stdout.value())
+        self.assertNotIn("Ada", stdout.value())
         self.assertNotIn("ada@example.com", stdout.value())
         self.assertEqual(_requests(self.log), [])
         os.environ["SHIPMENT_ALLOW_EMAIL"] = "1"
