@@ -134,10 +134,18 @@ def run_check(
             continue
         description = shipment.last_description or candidate.event.replace("_", " ")
         event_time = shipment.last_event_at or isoformat(now)
-        trigger = email.send(shipment, candidate.event, description, event_time)
+        siblings = [item for item in store.shipments if item.order_id == shipment.order_id] or [shipment]
+        trigger = email.send(shipment, candidate.event, description, event_time, siblings)
+        if trigger.reason == "waiting_for_order":
+            shipment.pending_event = candidate.event
+            if not shipment.pending_event_at:
+                shipment.pending_event_at = isoformat(now)
+            results.append(CheckResult(shipment.shipment_id, "defer", candidate.event, "waiting_for_order", trigger.argv))
+            continue
         if email.mode == "execute" and trigger.ok and trigger.reason == "sent":
             _mark_sent(store, shipment, candidate.event, now)
             last_sent[shipment.customer_email] = now
+            _close_order_if_delivered(siblings, candidate.event)
             results.append(CheckResult(shipment.shipment_id, "send", candidate.event, "sent", trigger.argv))
             continue
         if email.mode != "execute" and trigger.ok:
@@ -191,15 +199,23 @@ def apply_webhook(
             shipment.pending_event_at = shipment.pending_event_at or isoformat(now)
             results.append(CheckResult(shipment.shipment_id, "defer", candidate.event, "rate_limit_6h"))
             continue
+        siblings = [item for item in store.shipments if item.order_id == shipment.order_id] or [shipment]
         trigger = email.send(
             shipment,
             candidate.event,
             shipment.last_description or candidate.event,
             shipment.last_event_at or isoformat(now),
+            siblings,
         )
+        if trigger.reason == "waiting_for_order":
+            shipment.pending_event = candidate.event
+            shipment.pending_event_at = shipment.pending_event_at or isoformat(now)
+            results.append(CheckResult(shipment.shipment_id, "defer", candidate.event, "waiting_for_order", trigger.argv))
+            continue
         if email.mode == "execute" and trigger.ok and trigger.reason == "sent":
             _mark_sent(store, shipment, candidate.event, now)
             last_sent[shipment.customer_email] = now
+            _close_order_if_delivered(siblings, candidate.event)
             results.append(CheckResult(shipment.shipment_id, "send", candidate.event, "sent", trigger.argv))
         elif email.mode != "execute" and trigger.ok:
             shipment.pending_event = candidate.event
@@ -220,6 +236,20 @@ def _collect(candidates: list[_Candidate], results: list[CheckResult], shipment:
         candidates.append(_Candidate(shipment, observation.email_event, observation.reason))
         return
     results.append(CheckResult(shipment.shipment_id, "ignore", None, observation.reason))
+
+
+def _close_order_if_delivered(siblings: list[Shipment], event: str) -> None:
+    """After the consolidated delivered email, retire every line on the order."""
+    if event != DELIVERED:
+        return
+    if not siblings or not all(item.ever_delivered or item.status == DELIVERED for item in siblings):
+        return
+    for item in siblings:
+        item.order_closed = True
+        if DELIVERED not in item.notified_events:
+            item.notified_events.append(DELIVERED)
+        item.pending_event = None
+        item.pending_event_at = None
 
 
 def _mark_sent(store: Store, shipment: Shipment, event: str, now: datetime) -> None:

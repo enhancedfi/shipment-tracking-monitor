@@ -1,0 +1,10 @@
+{
+  "contacts": {
+    "99-EXAMPLE000000001": {
+      "email": "ada@example.com",
+      "first_name": "Ada",
+      "account": "Example Studio"
+    }
+  },
+  "skip_status_quo": ["99-EXAMPLE000000002"]
+}

@@ -1,10 +1,10 @@
-"""Hand a status change to the existing send-shipment-updates.py script.
+"""Hand a status change to customer-comms/send-shipment-updates.py.
 
-This module does not open an SMTP session. The sender lives at
-~/workspace/customer-comms/send-shipment-updates.py and takes no command-line
+This module does not open an SMTP session. The sender takes no command-line
 arguments, so the link flags on argv are ignored. Before the script is
-started, the shipment and the rendered body are written to a JSON file
-beside the store and ``SHIPMENT_EMAIL_STATE`` points at that file.
+started, the shipment, its order lines, and the rendered body are written
+to a JSON file beside the store and ``SHIPMENT_EMAIL_STATE`` points at that
+file.
 """
 
 from __future__ import annotations
@@ -18,10 +18,10 @@ from pathlib import Path
 
 from shipment_monitor.email_body import render_email_body
 from shipment_monitor.links import email_links
-from shipment_monitor.models import Shipment
+from shipment_monitor.models import DELIVERED, Shipment
 from shipment_monitor.store import write_private_text
 
-DEFAULT_SENDER = Path.home() / "workspace" / "customer-comms" / "send-shipment-updates.py"
+DEFAULT_SENDER = Path(__file__).resolve().parents[1] / "customer-comms" / "send-shipment-updates.py"
 EMAIL_STATE_ENV = "SHIPMENT_EMAIL_STATE"
 
 
@@ -37,7 +37,36 @@ def email_state_path(store_path: Path) -> Path:
     return store_path.with_name(store_path.name + ".email.json")
 
 
-def email_handoff(shipment: Shipment, event: str, description: str, event_time: str) -> dict:
+def order_line_payload(shipment: Shipment) -> dict:
+    """One order line inside the staged handoff, including only real links."""
+    tracking_url, tracking_html, order_url, order_html = email_links(shipment)
+    payload = {
+        "shipment_id": shipment.shipment_id,
+        "line": shipment.line,
+        "line_ending": shipment.line[-4:] if len(shipment.line) >= 4 else shipment.line,
+        "device": shipment.device,
+        "carrier": shipment.carrier,
+        "tracking": shipment.tracking_number,
+        "status": shipment.status,
+        "delivered": bool(shipment.ever_delivered or shipment.status == DELIVERED),
+        "order_closed": bool(shipment.order_closed),
+        "estimated_delivery": shipment.estimated_delivery or "",
+        "tracking_url": tracking_url,
+        "tracking_link": tracking_html,
+    }
+    if order_url and order_html:
+        payload["order_status_url"] = order_url
+        payload["order_status_link"] = order_html
+    return payload
+
+
+def email_handoff(
+    shipment: Shipment,
+    event: str,
+    description: str,
+    event_time: str,
+    order_lines: list[Shipment] | None = None,
+) -> dict:
     """Fields the sender used to take as flags, plus the rendered body.
 
     ``send-shipment-updates.py`` accepts no command-line arguments. The
@@ -68,6 +97,9 @@ def email_handoff(shipment: Shipment, event: str, description: str, event_time: 
     if order_url and order_html:
         payload["order_status_url"] = order_url
         payload["order_status_link"] = order_html
+    siblings = order_lines if order_lines else [shipment]
+    payload["order_lines"] = [order_line_payload(item) for item in siblings]
+    payload["order_closed"] = bool(shipment.order_closed or any(item.order_closed for item in siblings))
     return payload
 
 
@@ -135,7 +167,14 @@ class EmailTrigger:
         self.state_path = state_path
         self.planned: list[list[str]] = []
 
-    def send(self, shipment: Shipment, event: str, description: str, event_time: str) -> TriggerResult:
+    def send(
+        self,
+        shipment: Shipment,
+        event: str,
+        description: str,
+        event_time: str,
+        order_lines: list[Shipment] | None = None,
+    ) -> TriggerResult:
         argv = build_argv(self.script, shipment, event, description, event_time)
         if self.mode != "execute":
             self.planned.append(argv)
@@ -143,7 +182,10 @@ class EmailTrigger:
         if not self.script.is_file():
             return TriggerResult(False, "sender_missing", tuple(argv))
         if self.state_path is not None:
-            write_email_state(self.state_path, email_handoff(shipment, event, description, event_time))
+            write_email_state(
+                self.state_path,
+                email_handoff(shipment, event, description, event_time, order_lines),
+            )
         previous = os.environ.get(EMAIL_STATE_ENV)
         if self.state_path is not None:
             os.environ[EMAIL_STATE_ENV] = str(self.state_path)
@@ -154,6 +196,9 @@ class EmailTrigger:
                 os.environ.pop(EMAIL_STATE_ENV, None)
             else:
                 os.environ[EMAIL_STATE_ENV] = previous
+        if code == 4:
+            # The order is not fully delivered yet. Keep the handoff for the retry.
+            return TriggerResult(False, "waiting_for_order", tuple(argv))
         if code != 0:
             # Keep the 0600 state file so a retry can read the same handoff.
             return TriggerResult(False, f"sender_exit_{code}", tuple(argv))
@@ -165,4 +210,8 @@ class EmailTrigger:
 
 def _subprocess_runner(argv: list[str]) -> int:
     completed = subprocess.run(argv, check=False, capture_output=True, text=True)
+    if completed.stdout:
+        sys.stdout.write(completed.stdout)
+    if completed.stderr:
+        sys.stderr.write(completed.stderr)
     return completed.returncode

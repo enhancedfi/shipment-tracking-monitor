@@ -23,7 +23,7 @@ Label-created and unchanged in-transit scans do not send another email.
 
 ## How a cycle runs
 
-The AT&T order monitor (`~/workspace/att-order-monitor`) reads order status pages and emits shipment rows. This repo then checks public tracking pages and hands status changes to `~/workspace/customer-comms/send-shipment-updates.py`.
+The AT&T order monitor (`~/workspace/att-order-monitor`) reads order status pages and emits shipment rows. This repo then checks public tracking pages and hands status changes to `customer-comms/send-shipment-updates.py`.
 
 1. Import the new rows so tracking numbers are in the store. `run` does this when you pass `--input`. You can also import first, which is what the browser step needs.
 2. Print the public URLs for shipments that are not delivered and not closed. Save each page's visible text as `data/page-text/<tracking_number>.txt`.
@@ -114,7 +114,7 @@ UPS "Preparing for Delivery" is in transit. The package is at the facility being
 
 ## Existing email sender
 
-Customer wording stays in `~/workspace/customer-comms/send-shipment-updates.py`. This monitor only decides whether that script may run, then calls it:
+Customer wording lives in `customer-comms/send-shipment-updates.py`. This monitor decides whether that script may run, then calls it:
 
 ```text
 python send-shipment-updates.py \
@@ -136,7 +136,9 @@ python send-shipment-updates.py \
 
 When the shipment has both a recorded lookup email and ZIP, the argv also includes `--order-status-url` and `--order-status-link`. The URL is `https://www.att.com/acctmgmt/order/details?email=...&zip=...`, and `--order-status-link` is that URL as an HTML anchor. If either lookup field is missing, those two arguments are omitted. The customer notification address is not used in their place.
 
-`send-shipment-updates.py` takes no command-line arguments, so those four link flags are ignored if they are the only place the URLs exist. The monitor writes the same payload, including `tracking_url`, `tracking_link`, `order_status_url`, `order_status_link`, and the rendered HTML `body`, to `data/shipments.json.email.json` beside the store. `SHIPMENT_EMAIL_STATE` is set to that path for the sender process. The file is created at mode 0600. It is deleted after the sender exits 0. When the sender exits non-zero, the file stays at mode 0600 so a retry can read the same handoff. The body contains the carrier tracking link and, when lookup email and ZIP are both present, the AT&T order-status link.
+`send-shipment-updates.py` takes no command-line arguments, so those four link flags are ignored if they are the only place the URLs exist. The monitor writes the same payload, including `tracking_url`, `tracking_link`, `order_status_url`, `order_status_link`, the rendered HTML `body`, and the order's lines, to `data/shipments.json.email.json` beside the store. `SHIPMENT_EMAIL_STATE` is set to that path for the sender process. The file is created at mode 0600. It is deleted after the sender exits 0. When the sender exits non-zero, the file stays at mode 0600 so a retry can read the same handoff. The sender's body includes the carrier tracking link and the AT&T order-status link when the handoff has them. A missing link is left out.
+
+Customer names, emails, and order ids are not in git. Copy `customer-comms/contacts.example.json` to a mode-0600 file and set `SHIPMENT_CONTACTS` to that path. `customer-comms/contacts.json` is gitignored. Resend is imported with `from resend import _request` from the directory in `SHIPMENT_RESEND_BIN` (default `/home/hatch/workspace/skills/resend/bin`). Ledger files go under `SHIPMENT_COMMS_DIR`, or `data/customer-comms` when that is unset. A missing contacts entry prints `DOMINIC-NOTIFY` and does not send. Shipped mail is one email per order per batch. When every line on the order is delivered, the sender sends one consolidated email and the order is closed. Shipped and that final delivery go out immediately. Every other email waits 6 hours. A delivered line does not get a shipped email. A closed order stays silent.
 
 `orders.json` from att-order-monitor imports through the same command. Each order's `lookup_email` and `lookup_zip` are copied onto its shipment lines:
 
