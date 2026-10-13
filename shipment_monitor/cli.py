@@ -22,6 +22,7 @@ from shipment_monitor.fixtures import load_fixture_clients
 from shipment_monitor.models import Shipment, parse_time
 from shipment_monitor.monitor import run_check
 from shipment_monitor.monitor import apply_webhook
+from shipment_monitor.page_source import web_page_clients
 from shipment_monitor.parsing import snapshot_from_webhook
 from shipment_monitor.rate_limit import RequestBudget, SpacingLimiter
 from shipment_monitor.store import Store
@@ -35,11 +36,27 @@ def main(argv: list[str] | None = None) -> int:
 
     check = sub.add_parser("check", parents=[common], help="Read carrier status for due shipments")
     _add_email_flags(check)
-    check.add_argument("--fixtures", help="Directory of carrier JSON fixtures. Skips live APIs.")
+    check.add_argument("--fixtures", help="Directory of carrier JSON fixtures. Skips live APIs and page text.")
+    check.add_argument("--pages", help="Directory of <tracking_number>.txt public tracking-page text")
     check.add_argument("--force", action="store_true", help="Poll even inside the cooldown window")
     check.add_argument("--cooldown-hours", type=float, default=float(os.environ.get("SHIPMENT_COOLDOWN_HOURS", "3")))
     check.add_argument("--now", help="ISO timestamp used instead of the wall clock")
     check.add_argument("--commit", action="store_true", help="Write status changes back to the store")
+
+    run = sub.add_parser(
+        "run",
+        parents=[common],
+        help="Import shipments, poll saved tracking pages, and hand changes to the sender",
+    )
+    _add_email_flags(run)
+    run.add_argument("--input", help="JSON shipment list to import before polling")
+    run.add_argument(
+        "--pages",
+        help="Directory of <tracking_number>.txt public tracking-page text. Default: data/page-text",
+    )
+    run.add_argument("--force", action="store_true", help="Poll even inside the cooldown window")
+    run.add_argument("--cooldown-hours", type=float, default=float(os.environ.get("SHIPMENT_COOLDOWN_HOURS", "3")))
+    run.add_argument("--now", help="ISO timestamp used instead of the wall clock")
 
     briefing = sub.add_parser("briefing", parents=[common], help="Print the 6:00 AM, noon, or 4:00 PM summary")
     briefing.add_argument("--slot", choices=("auto", "morning", "noon", "afternoon"), default="auto")
@@ -74,7 +91,12 @@ def main(argv: list[str] | None = None) -> int:
     if isinstance(email, int):
         return email
 
-    if args.command == "check":
+    if args.command == "run" and args.input:
+        store.upsert(_load_shipments(Path(args.input)))
+        store.save()
+        print(f"stored {len(store.shipments)} shipments")
+
+    if args.command in {"check", "run"}:
         carriers = _carriers(args, clock)
         results = run_check(
             store,
@@ -83,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             email,
             cooldown=timedelta(hours=args.cooldown_hours),
             force=args.force,
-            persist=args.commit or args.execute,
+            persist=args.command == "run" or getattr(args, "commit", False) or args.execute,
         )
         _print_results(results)
         return 0
@@ -131,8 +153,11 @@ def _clock(now: str | None) -> Clock:
 
 
 def _carriers(args, clock: Clock) -> dict:
-    if args.fixtures:
+    if getattr(args, "fixtures", None):
         return load_fixture_clients(Path(args.fixtures))
+    page_dir = _page_directory(args)
+    if page_dir is not None:
+        return web_page_clients(page_dir)
     interval = float(os.environ.get("CARRIER_MIN_INTERVAL_SECONDS", "1"))
     budget_limit = int(os.environ.get("SHIPMENT_MAX_TRACK_REQUESTS", "60"))
     limiter = SpacingLimiter(interval, clock)
@@ -171,6 +196,36 @@ def _carriers(args, clock: Clock) -> dict:
             RequestBudget(budget_limit),
         )
     return clients
+
+
+def _page_directory(args) -> Path | None:
+    """Where saved public tracking-page text lives, if this poll should use it.
+
+    `run` always reads page text. `check` uses it when --pages or
+    SHIPMENT_PAGE_TEXT_DIR is set, or when data/page-text already holds
+    files. Official API clients remain the path when no page text is configured.
+    """
+    explicit = getattr(args, "pages", None)
+    if explicit:
+        return _require_page_dir(Path(explicit))
+    if args.command == "run":
+        return _require_page_dir(Path(os.environ.get("SHIPMENT_PAGE_TEXT_DIR", "data/page-text")))
+    env = os.environ.get("SHIPMENT_PAGE_TEXT_DIR")
+    if env:
+        return _require_page_dir(Path(env))
+    default = Path("data/page-text")
+    if default.is_dir() and any(default.glob("*.txt")):
+        return default
+    return None
+
+
+def _require_page_dir(path: Path) -> Path:
+    if not path.is_dir():
+        raise SystemExit(
+            f"Page text directory not found: {path}. "
+            "Save each public tracking page as <tracking_number>.txt before polling."
+        )
+    return path
 
 
 def _load_shipments(path: Path) -> list[Shipment]:
